@@ -41,6 +41,70 @@ Studio installation, Windows SDK version, and free space for each run. It never
 lowers the existing 150 GB builder minimum or `10.0.28000.0` SDK requirement in
 order to force a sync.
 
+## Runner storage topology (measured in run `38103342538`)
+
+GitHub-hosted Windows runners expose `C:` and `D:` as **separate volumes**:
+
+| Path                                                                   | Volume | Contents                                                                                                                                     |
+| ---------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `C:\Android`, `C:\hostedtoolcache\windows\...`, `C:\Program Files\...` | `C:\`  | Operating system and preinstalled toolchains (Visual Studio, Windows Kits, Android, CodeQL, Go, Ruby, Miniconda, Julia, R, database servers) |
+| `D:\a\aurelia\aurelia` (`GITHUB_WORKSPACE`)                            | `D:\`  | Checked-out Aurelia repository                                                                                                               |
+| `D:\a\_temp\aurelia-chromium` (`RUNNER_TEMP`)                          | `D:\`  | Chromium checkout destination measured by preflight                                                                                          |
+
+Run `38103342538` proved this with live measurements: cleanup deleted 20
+allowlisted directories under `C:\` while the Chromium destination volume
+reported **147.0 GB free before cleanup and 147.0 GB free after cleanup**
+(`0.0 GB` reclaimed). Deleting files on `C:` cannot increase free space on
+`D:`.
+
+Run `38105208893` then measured every volume on the same image after the
+Windows SDK `10.0.28000.0` installation:
+
+| Volume | Free disk (measured)   | Meets the 150 GB floor |
+| ------ | ---------------------- | ---------------------- |
+| `C:\`  | 30.3 GB                | no                     |
+| `D:\`  | 147.0 GB (destination) | no                     |
+
+No volume on a standard `windows-2025` runner reaches 150 GB, so
+`runner-preflight` reports **BLOCKED** with those measurements instead of
+starting a Chromium sync. A GN pass therefore requires a GitHub-hosted Windows
+larger runner (`runner_size: larger`, label `windows-latest-8-cores`,
+8 vCPU / 32 GB RAM / 300 GB SSD) or another machine that satisfies the
+unchanged floor. The floor itself is deliberately not lowered.
+
+`tools/chromium/prepare-runner.mjs` is therefore volume-aware:
+
+- It resolves the volume that hosts the Chromium destination and only deletes
+  allowlisted targets **on that volume**.
+- Targets on any other volume are recorded as `offVolumeTargets` and skipped;
+  they are never counted as reclaimed space.
+- Reclaimed space is the difference between two live measurements of the
+  destination volume. It is never estimated and never clamped to zero, so a
+  `0.0 GB` result is reported honestly.
+- Each target is classified as `removed`, `missing`, `failed`, `rejected`
+  (protected path), or `offVolume`. An absent directory is never reported as
+  removed.
+- Every volume on the runner is measured and reported with its free space,
+  whether it meets the unchanged 150 GB floor, and whether it is the Chromium
+  destination volume. When the destination volume is short, `runner-preflight`
+  lists any alternative volume that does satisfy the floor, and the workflow
+  accepts an explicit `chromium_dest` input to place the checkout there.
+
+The 150 GB floor is unchanged by this work.
+
+## Windows SDK signature verification (run `38103342538`)
+
+`winsdksetup.exe` downloaded successfully (1,417,000 bytes), but the single
+verification host `powershell.exe` aborted with
+`CouldNotAutoloadMatchingModule - the module Microsoft.PowerShell.Security could
+not be loaded`, so no signature was verified and the installer was never
+executed. Verification now tries `pwsh` (PowerShell 7) first and falls back to
+Windows PowerShell 5.1, explicitly runs
+`Import-Module Microsoft.PowerShell.Security -Force` on every host, captures the
+PowerShell version, `PSModulePath`, and the underlying module-import error, and
+requires a valid `Microsoft Corporation` Authenticode signature. If no host can
+verify the signature the installer is deleted and never executed.
+
 ## Chromium requirements and workflow design
 
 Chromium's current Linux build instructions specify at least 100 GB free disk

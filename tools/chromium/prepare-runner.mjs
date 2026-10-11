@@ -31,6 +31,36 @@
  *     Boost, Go, Ruby, Miniconda, Julia, R, PostgreSQL, MySQL, MongoDB), leaving
  *     `147.0 GB` free (~3 GB below Aurelia's `150 GB` pre-sync safety floor).
  *
+ * ## Run `38103342538` follow-up (two further real blockers)
+ *
+ * After the runner-preflight fixes above were merged, run `38103342538`
+ * (`gn / standard`, image `windows-2025-vs2026`) still blocked, and exposed two
+ * further defects that this module now fixes:
+ *
+ *  3. **Authenticode verification never completed**: `winsdksetup.exe` was
+ *     downloaded successfully (1,417,000 bytes), but the verification host
+ *     `powershell.exe` aborted with
+ *     `CouldNotAutoloadMatchingModule - the module Microsoft.PowerShell.Security
+ *     could not be loaded`. Verification now runs on `pwsh` (PowerShell 7)
+ *     first with Windows PowerShell 5.1 as a documented fallback, explicitly
+ *     `Import-Module Microsoft.PowerShell.Security` on every host, captures the
+ *     module-import error (PowerShell version, `PSModulePath`), requires a valid
+ *     `Microsoft Corporation` signature, and deletes the installer instead of
+ *     executing it when no host can verify it.
+ *
+ *  4. **Disk cleanup reclaimed `0.0 GB` while reporting 20 removals**: the
+ *     Chromium destination is `D:\a\_temp\aurelia-chromium` (`147.0 GB` before
+ *     and after cleanup) while every allowlisted target lives on `C:\`.
+ *     GitHub-hosted Windows runners expose `C:` (operating system and
+ *     preinstalled toolchains) and `D:` (workspace and `RUNNER_TEMP`) as
+ *     **separate volumes**, so `C:` deletions cannot free space on `D:`.
+ *     Cleanup is now volume-aware: it only deletes targets on the destination
+ *     volume, records off-volume targets separately, measures the reclaimed
+ *     delta from two live measurements (never estimated, never clamped),
+ *     distinguishes absent / removed / failed / rejected / off-volume, and
+ *     reports every volume on the runner so an alternative destination volume
+ *     can be evaluated against the unchanged `150 GB` floor.
+ *
  * This module prepares a GitHub-hosted Windows runner before `runner-preflight`
  * finalizes its verdict:
  *  - Reclaims disk space ONLY from an explicit allowlist of non-Chromium runner
@@ -293,6 +323,175 @@ export function normalizeWindowsPath(rawPath) {
 }
 
 /**
+ * Resolve the filesystem volume that contains `targetPath`.
+ *
+ * On Windows the volume is the drive-letter root (`D:\` for
+ * `D:\a\_temp\aurelia-chromium`); on POSIX it is `/`.
+ *
+ * Volume identity is the root cause of the zero-byte reclaim observed in run
+ * `38103342538`: GitHub-hosted Windows runners expose `C:` (operating system
+ * and preinstalled toolchains) and `D:` (workspace and `RUNNER_TEMP`) as
+ * **separate volumes**, so deleting allowlisted directories under `C:\` cannot
+ * increase free space on the `D:\` volume that hosts the Chromium destination.
+ *
+ * @param {string} targetPath
+ * @param {object} [options]
+ * @param {string} [options.platform] Node platform identifier.
+ * @returns {string|null} Uppercase Windows root (`C:\`), `/` on POSIX, or null.
+ */
+export function volumeRootOf(targetPath, { platform = process.platform } = {}) {
+  if (typeof targetPath !== 'string' || targetPath.trim().length === 0) {
+    return null;
+  }
+  const raw = targetPath.trim();
+  // Decide on the shape of the path, not only on the host platform: runner
+  // preparation only ever handles Windows paths, and the helpers must stay
+  // unit-testable on POSIX developers machines.
+  const hasWindowsDrive = /^[a-zA-Z]:([\\/]|$)/.test(raw);
+  if (hasWindowsDrive || raw.startsWith('\\\\') || platform === 'win32') {
+    const normalized = path.win32.normalize(raw.replaceAll('/', '\\'));
+    const drive = /^([a-zA-Z]:)/.exec(normalized);
+    if (drive !== null) {
+      return `${drive[1].toUpperCase()}\\`;
+    }
+    const root = path.win32.parse(normalized).root;
+    return root.length > 0 ? root.toUpperCase() : null;
+  }
+  return path.posix.parse(path.posix.resolve(raw)).root || '/';
+}
+
+/**
+ * True when both paths are located on the same filesystem volume.
+ *
+ * @param {string} leftPath
+ * @param {string} rightPath
+ * @param {object} [options]
+ * @param {string} [options.platform]
+ * @returns {boolean}
+ */
+export function isSameVolume(
+  leftPath,
+  rightPath,
+  { platform = process.platform } = {},
+) {
+  const left = volumeRootOf(leftPath, { platform });
+  const right = volumeRootOf(rightPath, { platform });
+  if (left === null || right === null) {
+    return false;
+  }
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+/** Drive letters probed when measuring every volume on a Windows runner. */
+export const WINDOWS_PROBE_DRIVE_LETTERS = Object.freeze(
+  'CDEFGHIJKLMNOPQRSTUVWXYZ'.split(''),
+);
+
+/**
+ * Measure free disk on every existing drive-letter volume of a Windows runner.
+ *
+ * @param {object} [options]
+ * @param {string} [options.platform]
+ * @param {string[]} [options.driveLetters]
+ * @param {Function} [options.exists]
+ * @param {Function} [options.measureFreeDisk]
+ * @returns {Array<{volume: string, freeDiskGb: number|null}>}
+ */
+export function measureWindowsVolumes({
+  platform = process.platform,
+  driveLetters = WINDOWS_PROBE_DRIVE_LETTERS,
+  exists = existsSync,
+  measureFreeDisk = (targetPath) => measureVolumeFreeDiskGb(targetPath),
+} = {}) {
+  if (platform !== 'win32') {
+    return [];
+  }
+  const volumes = [];
+  for (const letter of driveLetters) {
+    const root = `${letter}:\\`;
+    let present = false;
+    try {
+      present = Boolean(exists(root));
+    } catch {
+      present = false;
+    }
+    if (!present) {
+      continue;
+    }
+    volumes.push({ volume: root, freeDiskGb: measureFreeDisk(root) });
+  }
+  return volumes;
+}
+
+/**
+ * Evaluate the volume hosting the Chromium destination against every other
+ * volume present on the runner.
+ *
+ * The result never estimates or fabricates reclaimed space: every number is a
+ * live measurement of `measureFreeDisk`, and `alternativeVolumes` is empty when
+ * no other volume satisfies `minimumFreeDiskGb`.
+ *
+ * @param {object} options
+ * @param {string} options.dest
+ * @param {number} [options.minimumFreeDiskGb]
+ * @param {string} [options.platform]
+ * @param {Function} [options.exists]
+ * @param {Function} [options.measureFreeDisk]
+ * @returns {{destinationVolume: string|null, destinationFreeDiskGb: number|null,
+ *   minimumFreeDiskGb: number, destinationMeetsMinimum: boolean,
+ *   volumes: Array<object>, alternativeVolumes: Array<object>,
+ *   recommendedVolume: string|null}}
+ */
+export function evaluateDestinationVolumes({
+  dest,
+  minimumFreeDiskGb = MINIMUM_PRE_SYNC_FREE_DISK_GB,
+  platform = process.platform,
+  exists = existsSync,
+  measureFreeDisk = (targetPath) => measureVolumeFreeDiskGb(targetPath),
+} = {}) {
+  const destinationVolume = volumeRootOf(dest, { platform });
+  const measured = measureWindowsVolumes({
+    platform,
+    exists,
+    measureFreeDisk,
+  });
+  const rows = measured.map((entry) => ({
+    volume: entry.volume,
+    freeDiskGb: entry.freeDiskGb,
+    meetsMinimum:
+      typeof entry.freeDiskGb === 'number' &&
+      Number.isFinite(entry.freeDiskGb) &&
+      entry.freeDiskGb >= minimumFreeDiskGb,
+    isDestinationVolume:
+      destinationVolume !== null &&
+      entry.volume.toLowerCase() === destinationVolume.toLowerCase(),
+  }));
+
+  const destinationRow = rows.find((row) => row.isDestinationVolume) ?? null;
+  const destinationFreeDiskGb =
+    destinationRow?.freeDiskGb ?? measureFreeDisk(dest);
+  const destinationMeetsMinimum =
+    typeof destinationFreeDiskGb === 'number' &&
+    Number.isFinite(destinationFreeDiskGb) &&
+    destinationFreeDiskGb >= minimumFreeDiskGb;
+  const alternativeVolumes = rows
+    .filter((row) => !row.isDestinationVolume && row.meetsMinimum)
+    .sort((left, right) => right.freeDiskGb - left.freeDiskGb);
+
+  return {
+    destinationVolume,
+    destinationFreeDiskGb,
+    minimumFreeDiskGb,
+    destinationMeetsMinimum,
+    volumes: rows,
+    alternativeVolumes,
+    recommendedVolume: destinationMeetsMinimum
+      ? destinationVolume
+      : (alternativeVolumes[0]?.volume ?? null),
+  };
+}
+
+/**
  * Check whether `candidatePath` is protected or overlaps with any protected
  * directory (either as a child inside a protected directory or as an ancestor
  * that contains a protected directory).
@@ -420,16 +619,19 @@ export function reclaimHostedRunnerDisk({
       freeDiskBeforeGb: null,
       freeDiskAfterGb: null,
       reclaimedGb: 0,
+      destinationVolume: volumeRootOf(dest, { platform }),
       removedTargets: [],
       missingTargets: [],
       rejectedTargets: [],
       failedTargets: [],
+      offVolumeTargets: [],
     };
   }
 
+  const destinationVolume = volumeRootOf(dest, { platform });
   const freeDiskBeforeGb = measureFreeDisk(dest);
   log(
-    `disk cleanup: destination volume free disk before cleanup is ${
+    `disk cleanup: destination volume ${destinationVolume ?? 'unknown'} free disk before cleanup is ${
       freeDiskBeforeGb === null ? 'unknown' : `${freeDiskBeforeGb.toFixed(1)} GB`
     } (target >= ${targetFreeDiskGb} GB, required floor >= ${MINIMUM_PRE_SYNC_FREE_DISK_GB} GB)`,
   );
@@ -438,6 +640,7 @@ export function reclaimHostedRunnerDisk({
   const missingTargets = [];
   const rejectedTargets = [];
   const failedTargets = [];
+  const offVolumeTargets = [];
 
   for (const entry of targets) {
     const targetPath = typeof entry === 'string' ? entry : entry.path;
@@ -461,6 +664,23 @@ export function reclaimHostedRunnerDisk({
       continue;
     }
 
+    // Deleting a directory only frees space on the volume that hosts it. The
+    // Chromium checkout lives on the destination volume, so targets on any
+    // other volume are recorded and skipped instead of being reported as
+    // reclaimed space.
+    if (!isSameVolume(targetPath, dest, { platform })) {
+      const targetVolume = volumeRootOf(targetPath, { platform });
+      offVolumeTargets.push({
+        path: targetPath,
+        category,
+        volume: targetVolume,
+      });
+      log(
+        `disk cleanup: SKIPPED ${targetPath} (${category}) - it lives on volume ${targetVolume ?? 'unknown'}, not on the Chromium destination volume ${destinationVolume ?? 'unknown'}`,
+      );
+      continue;
+    }
+
     let present = false;
     try {
       present = Boolean(exists(targetPath));
@@ -472,10 +692,9 @@ export function reclaimHostedRunnerDisk({
       continue;
     }
 
+    const freeBeforeRemovalGb = measureFreeDisk(dest);
     try {
       rm(targetPath);
-      removedTargets.push({ path: targetPath, category });
-      log(`disk cleanup: removed ${targetPath} (${category})`);
     } catch (error) {
       failedTargets.push({
         path: targetPath,
@@ -484,7 +703,41 @@ export function reclaimHostedRunnerDisk({
       log(
         `disk cleanup: failed to remove ${targetPath}: ${error.message ?? error}`,
       );
+      continue;
     }
+
+    const freeAfterRemovalGb = measureFreeDisk(dest);
+    // Only report a removal as successful when the directory is really gone.
+    let stillPresent = false;
+    try {
+      stillPresent = Boolean(exists(targetPath));
+    } catch {
+      stillPresent = false;
+    }
+    if (stillPresent) {
+      failedTargets.push({
+        path: targetPath,
+        error: 'directory still exists after removal',
+      });
+      log(
+        `disk cleanup: failed to remove ${targetPath}: directory still exists after removal`,
+      );
+      continue;
+    }
+
+    const reclaimedByTargetGb =
+      typeof freeBeforeRemovalGb === 'number' &&
+      typeof freeAfterRemovalGb === 'number'
+        ? Math.round((freeAfterRemovalGb - freeBeforeRemovalGb) * 10) / 10
+        : null;
+    removedTargets.push({
+      path: targetPath,
+      category,
+      reclaimedGb: reclaimedByTargetGb,
+    });
+    log(
+      `disk cleanup: removed ${targetPath} (${category}); destination volume free disk ${freeBeforeRemovalGb?.toFixed(1) ?? 'unknown'} GB -> ${freeAfterRemovalGb?.toFixed(1) ?? 'unknown'} GB`,
+    );
 
     const currentFreeGb = measureFreeDisk(dest);
     if (
@@ -500,24 +753,30 @@ export function reclaimHostedRunnerDisk({
   }
 
   const freeDiskAfterGb = measureFreeDisk(dest);
+  // Measured, never estimated: the difference between two live measurements of
+  // the destination volume. A value of 0 (or negative) is reported as measured
+  // so cross-volume cleanup can never be mistaken for reclaimed space.
   const reclaimedGb =
     typeof freeDiskBeforeGb === 'number' && typeof freeDiskAfterGb === 'number'
-      ? Math.max(
-          0,
-          Math.round((freeDiskAfterGb - freeDiskBeforeGb) * 10) / 10,
-        )
+      ? Math.round((freeDiskAfterGb - freeDiskBeforeGb) * 10) / 10
       : 0;
 
   log(
-    `disk cleanup: free disk after cleanup is ${
+    `disk cleanup: destination volume ${destinationVolume ?? 'unknown'} free disk after cleanup is ${
       freeDiskAfterGb === null ? 'unknown' : `${freeDiskAfterGb.toFixed(1)} GB`
-    } (reclaimed ${reclaimedGb.toFixed(1)} GB across ${removedTargets.length} directory(s))`,
+    } (measured reclaimed ${reclaimedGb.toFixed(1)} GB; ${removedTargets.length} removed, ${missingTargets.length} absent, ${offVolumeTargets.length} on another volume, ${failedTargets.length} failed, ${rejectedTargets.length} rejected)`,
   );
+  if (offVolumeTargets.length > 0 && removedTargets.length === 0) {
+    log(
+      `disk cleanup: no allowlisted target lives on the destination volume ${destinationVolume ?? 'unknown'}; free space on that volume cannot be reclaimed by cleanup`,
+    );
+  }
 
   return {
     executed: true,
     skipped: false,
     reason: null,
+    destinationVolume,
     freeDiskBeforeGb,
     freeDiskAfterGb,
     reclaimedGb,
@@ -525,29 +784,297 @@ export function reclaimHostedRunnerDisk({
     missingTargets,
     rejectedTargets,
     failedTargets,
+    offVolumeTargets,
   };
 }
 
 /**
- * Default downloader and Authenticode verifier for `winsdksetup.exe` on a
- * GitHub-hosted Windows runner using Windows PowerShell 5.1.
+ * Minimum plausible size of the Windows SDK bootstrap installer (512 KiB).
+ * Anything smaller is a redirect page or an error body, not the installer.
  */
-function defaultDownloadAndVerifyInstaller({
+export const MINIMUM_INSTALLER_BYTES = 524288;
+
+/**
+ * Module that provides `Get-AuthenticodeSignature` on Windows PowerShell.
+ */
+export const AUTHENTICODE_SECURITY_MODULE = 'Microsoft.PowerShell.Security';
+
+/** Required publisher text in the Authenticode signer certificate subject. */
+export const REQUIRED_SIGNER_SUBJECT = 'Microsoft Corporation';
+
+/**
+ * PowerShell hosts used for Authenticode verification, in preference order.
+ *
+ * Run `38103342538` proved the single-host implementation was fragile: the
+ * installer downloaded successfully (1,417,000 bytes) but `powershell.exe`
+ * (Windows PowerShell 5.1) aborted with
+ * `CouldNotAutoloadMatchingModule - the module Microsoft.PowerShell.Security
+ * could not be loaded`, so a *verified* signature was never produced and the
+ * installer was (correctly) never executed.
+ *
+ * `pwsh` (PowerShell 7, shipped with GitHub-hosted Windows runners) is tried
+ * first; Windows PowerShell 5.1 remains the fallback. Both hosts are required
+ * to explicitly `Import-Module Microsoft.PowerShell.Security`, and every host
+ * failure is captured with its PowerShell version, `PSModulePath`, and the
+ * underlying module-import error. Signature verification stays mandatory: if
+ * no host can verify a valid Microsoft publisher signature, the installer is
+ * deleted and never executed.
+ */
+export const AUTHENTICODE_POWERSHELL_CANDIDATES = Object.freeze([
+  { file: 'pwsh', label: 'PowerShell 7 (pwsh)' },
+  { file: 'powershell', label: 'Windows PowerShell 5.1 (powershell.exe)' },
+]);
+
+/**
+ * Build the PowerShell script that explicitly imports the Authenticode
+ * security module and verifies the installer signature.
+ *
+ * The script never relies on module auto-loading and always prints a single
+ * JSON report as its last stdout line so the caller can distinguish:
+ *  - `stage: 'import-module'`  - `Microsoft.PowerShell.Security` unavailable
+ *  - `stage: 'get-authenticodesignature'` - the cmdlet itself failed
+ *  - `ok: $true` - a valid Microsoft Corporation signature was verified
+ *
+ * @param {object} options
+ * @param {string} options.installerPath
+ * @param {string} [options.moduleName]
+ * @param {string} [options.requiredSubject]
+ * @returns {string} PowerShell 5.1 and 7 compatible script.
+ */
+export function buildAuthenticodeVerificationScript({
+  installerPath,
+  moduleName = AUTHENTICODE_SECURITY_MODULE,
+  requiredSubject = REQUIRED_SIGNER_SUBJECT,
+} = {}) {
+  const escapedPath = String(installerPath).replaceAll("'", "''");
+  const escapedModule = String(moduleName).replaceAll("'", "''");
+  const escapedSubject = String(requiredSubject).replaceAll("'", "''");
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    '$ProgressPreference = "SilentlyContinue"',
+    `$dest = '${escapedPath}'`,
+    `$moduleName = '${escapedModule}'`,
+    `$requiredSubject = '${escapedSubject}'`,
+    '$report = [ordered]@{',
+    "  ok = $false",
+    "  stage = 'start'",
+    '  psVersion = [string]$PSVersionTable.PSVersion',
+    '  psEdition = [string]$PSVersionTable.PSEdition',
+    '  psHome = [string]$PSHOME',
+    '  psModulePath = [string]$env:PSModulePath',
+    "  moduleImported = $false",
+    '  moduleImportError = $null',
+    '  signatureStatus = $null',
+    '  signerSubject = $null',
+    '  error = $null',
+    '}',
+    '$emit = { param($r) [Console]::Out.WriteLine(($r | ConvertTo-Json -Compress)) }',
+    'try {',
+    '  Import-Module -Name $moduleName -Force -ErrorAction Stop',
+    '  $report.moduleImported = $true',
+    '} catch {',
+    "  $report.stage = 'import-module'",
+    '  $report.moduleImportError = $_.Exception.ToString()',
+    '  $report.error = $_.Exception.Message',
+    '  & $emit $report',
+    '  exit 3',
+    '}',
+    'try {',
+    "  $report.stage = 'get-authenticodesignature'",
+    '  $sig = Get-AuthenticodeSignature -LiteralPath $dest',
+    '  $report.signatureStatus = [string]$sig.Status',
+    '  if ($null -ne $sig.SignerCertificate) {',
+    '    $report.signerSubject = [string]$sig.SignerCertificate.Subject',
+    '  }',
+    '  $report.ok = (',
+    "    $sig.Status -eq 'Valid' -and",
+    '    $null -ne $sig.SignerCertificate -and',
+    '    $report.signerSubject -match [regex]::Escape($requiredSubject)',
+    '  )',
+    '  if (-not $report.ok) {',
+    '    $report.error = ("Authenticode verification failed: status=" + $report.signatureStatus + " subject=" + $report.signerSubject)',
+    '    Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue',
+    '    & $emit $report',
+    '    exit 4',
+    '  }',
+    '} catch {',
+    "  $report.stage = 'get-authenticodesignature'",
+    '  $report.error = $_.Exception.ToString()',
+    '  Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue',
+    '  & $emit $report',
+    '  exit 5',
+    '}',
+    '& $emit $report',
+    'exit 0',
+  ].join('\n');
+}
+
+/**
+ * Parse the last JSON object printed by an Authenticode verification script.
+ *
+ * @param {string} stdout
+ * @returns {object|null}
+ */
+export function parseAuthenticodeReport(stdout) {
+  const lines = String(stdout ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].startsWith('{')) {
+      continue;
+    }
+    try {
+      return JSON.parse(lines[index]);
+    } catch {
+      // Keep scanning older lines; the report is the last valid JSON object.
+    }
+  }
+  return null;
+}
+
+/**
+ * Verify that `filePath` carries a valid Microsoft Corporation Authenticode
+ * signature, trying every supported PowerShell host in order.
+ *
+ * @param {object} options
+ * @param {string} options.filePath
+ * @param {Function} [options.spawn]
+ * @param {object} [options.env]
+ * @param {Array<{file: string, label: string}>} [options.candidates]
+ * @param {string} [options.moduleName]
+ * @param {Function} [options.log]
+ * @returns {{verified: boolean, host: string|null, label: string|null,
+ *   report: object|null, attempts: Array<object>}}
+ */
+export function verifyAuthenticodeSignature({
+  filePath,
+  spawn = spawnSync,
+  env = process.env,
+  candidates = AUTHENTICODE_POWERSHELL_CANDIDATES,
+  moduleName = AUTHENTICODE_SECURITY_MODULE,
+  log = () => {},
+} = {}) {
+  const script = buildAuthenticodeVerificationScript({
+    installerPath: filePath,
+    moduleName,
+  });
+  const attempts = [];
+
+  for (const candidate of candidates) {
+    let result;
+    try {
+      result = spawn(
+        candidate.file,
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { encoding: 'utf8', env, windowsHide: true },
+      );
+    } catch (error) {
+      attempts.push({
+        host: candidate.file,
+        label: candidate.label,
+        launched: false,
+        exitCode: null,
+        detail: error.message ?? String(error),
+        report: null,
+      });
+      log(
+        `authenticode: ${candidate.label} could not be started: ${error.message ?? error}`,
+      );
+      continue;
+    }
+
+    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim();
+    const report = parseAuthenticodeReport(result.stdout);
+
+    if (result.error !== undefined) {
+      attempts.push({
+        host: candidate.file,
+        label: candidate.label,
+        launched: false,
+        exitCode: null,
+        detail: result.error.message ?? detail,
+        report,
+      });
+      log(
+        `authenticode: ${candidate.label} is not available on this runner: ${result.error.message}`,
+      );
+      continue;
+    }
+
+    attempts.push({
+      host: candidate.file,
+      label: candidate.label,
+      launched: true,
+      exitCode: result.status ?? null,
+      detail,
+      report,
+    });
+
+    if (result.status === 0 && report?.ok === true) {
+      log(
+        `authenticode: ${candidate.label} verified ${filePath} (status=${report.signatureStatus}, signer=${report.signerSubject}, ${moduleName} imported=${report.moduleImported})`,
+      );
+      return {
+        verified: true,
+        host: candidate.file,
+        label: candidate.label,
+        report,
+        attempts,
+      };
+    }
+
+    const reason =
+      report?.moduleImportError ??
+      report?.error ??
+      (detail.length > 0 ? detail.split('\n')[0] : null) ??
+      `exit code ${result.status}`;
+    log(
+      `authenticode: ${candidate.label} did not verify ${filePath} (exit=${result.status}, stage=${report?.stage ?? 'unknown'}, psVersion=${report?.psVersion ?? 'unknown'}, reason=${reason})`,
+    );
+  }
+
+  return {
+    verified: false,
+    host: null,
+    label: null,
+    report: attempts.at(-1)?.report ?? null,
+    attempts,
+  };
+}
+
+/**
+ * Download the Windows SDK bootstrap installer from the first Microsoft
+ * endpoint that returns a file larger than `minimumBytes`.
+ *
+ * @param {object} options
+ * @param {string[]} options.urls
+ * @param {string} options.installerPath
+ * @param {Function} [options.spawn]
+ * @param {object} [options.env]
+ * @param {number} [options.minimumBytes]
+ * @param {Function} [options.log]
+ * @returns {{url: string, bytes: number}}
+ */
+export function downloadInstaller({
   urls,
   installerPath,
   spawn = spawnSync,
   env = process.env,
-}) {
+  minimumBytes = MINIMUM_INSTALLER_BYTES,
+  log = () => {},
+} = {}) {
   const urlLiterals = urls
     .map((url) => `'${String(url).replaceAll("'", "''")}'`)
     .join(', ');
-  const escapedInstaller = installerPath.replaceAll("'", "''");
+  const escapedInstaller = String(installerPath).replaceAll("'", "''");
   const script = [
     "$ErrorActionPreference = 'Stop'",
     '[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12',
     '$ProgressPreference = "SilentlyContinue"',
     `$urls = @(${urlLiterals})`,
     `$dest = '${escapedInstaller}'`,
+    `$minimumBytes = ${minimumBytes}`,
     '$selectedUrl = $null',
     '$lastError = $null',
     'foreach ($u in $urls) {',
@@ -555,10 +1082,11 @@ function defaultDownloadAndVerifyInstaller({
     '    & curl.exe -fL --retry 3 --retry-delay 5 -o $dest $u',
     '    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $dest)) {',
     '      $item = Get-Item -LiteralPath $dest',
-    '      if ($item.Length -gt 524288) {',
+    '      if ($item.Length -gt $minimumBytes) {',
     '        $selectedUrl = $u',
     '        break',
     '      }',
+    '      Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue',
     '    }',
     '  } catch {',
     '    $lastError = $_.Exception.Message',
@@ -567,38 +1095,102 @@ function defaultDownloadAndVerifyInstaller({
     'if (-not $selectedUrl) {',
     '  throw ("Failed to download winsdksetup.exe from Microsoft endpoints. Last error: " + $lastError)',
     '}',
-    '$sig = Get-AuthenticodeSignature -LiteralPath $dest',
-    'if ($null -eq $sig -or $sig.Status -ne "Valid" -or $null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch "Microsoft Corporation") {',
-    '  $status = if ($null -ne $sig) { $sig.Status } else { "Unknown" }',
-    '  $subject = if ($null -ne $sig -and $null -ne $sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "None" }',
-    '  Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue',
-    '  throw ("Authenticode signature check failed for winsdksetup.exe: status=" + $status + " subject=" + $subject)',
-    '}',
-    '@{ url = $selectedUrl; status = [string]$sig.Status; subject = [string]$sig.SignerCertificate.Subject } | ConvertTo-Json -Compress',
+    '$item = Get-Item -LiteralPath $dest',
+    '@{ url = $selectedUrl; bytes = [int64]$item.Length } | ConvertTo-Json -Compress',
   ].join('\n');
 
   const result = spawn(
-    'powershell.exe',
+    'powershell',
     ['-NoProfile', '-NonInteractive', '-Command', script],
     { encoding: 'utf8', env, windowsHide: true },
   );
-  if (result.error !== undefined || result.status !== 0) {
-    const detail =
-      `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim() ||
-      (result.error ? result.error.message : `exit code ${result.status}`);
-    throw new Error(`Windows SDK installer download/verification failed: ${detail}`);
+  if (result.error !== undefined) {
+    throw new Error(
+      `Windows SDK installer download failed: ${result.error.message}`,
+    );
   }
-  const lines = (result.stdout ?? '')
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const lastLine = lines.at(-1) ?? '{}';
-  const parsed = JSON.parse(lastLine);
+  if (result.status !== 0) {
+    const detail = `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim();
+    throw new Error(
+      `Windows SDK installer download failed: ${detail || `exit code ${result.status}`}`,
+    );
+  }
+  const report = parseAuthenticodeReport(result.stdout);
+  const url = report?.url ?? null;
+  if (typeof url !== 'string' || url.length === 0) {
+    throw new Error(
+      'Windows SDK installer download failed: no Microsoft endpoint returned the installer',
+    );
+  }
+  log(`windows sdk: downloaded installer from ${url}`);
+  return { url, bytes: Number(report?.bytes ?? 0) };
+}
+
+/**
+ * Default downloader and mandatory Authenticode verifier for
+ * `winsdksetup.exe` on a GitHub-hosted Windows runner.
+ *
+ * The installer is executed only when a supported PowerShell host verifies a
+ * valid `Microsoft Corporation` Authenticode signature. When verification
+ * fails the installer is deleted and the aggregated diagnostics (PowerShell
+ * version, `PSModulePath`, module-import error) are reported so the exact
+ * failure is visible in the workflow log.
+ */
+export function defaultDownloadAndVerifyInstaller({
+  urls,
+  installerPath,
+  spawn = spawnSync,
+  env = process.env,
+  rm = rmSync,
+  log = () => {},
+} = {}) {
+  const downloaded = downloadInstaller({
+    urls,
+    installerPath,
+    spawn,
+    env,
+    log,
+  });
+  const verification = verifyAuthenticodeSignature({
+    filePath: installerPath,
+    spawn,
+    env,
+    log,
+  });
+
+  if (!verification.verified) {
+    // Never leave an unsigned or unverified installer on disk.
+    try {
+      rm(installerPath, { force: true });
+    } catch {
+      // The verification failure is the primary error; do not mask it.
+    }
+    const diagnostics = verification.attempts.map((attempt) => {
+      const report = attempt.report ?? {};
+      return [
+        attempt.label,
+        `launched=${attempt.launched}`,
+        `exit=${attempt.exitCode ?? 'n/a'}`,
+        `stage=${report.stage ?? 'unknown'}`,
+        `moduleImported=${report.moduleImported ?? false}`,
+        `psVersion=${report.psVersion ?? 'unknown'}`,
+        `psHome=${report.psHome ?? 'unknown'}`,
+        `psModulePath=${report.psModulePath ?? 'unknown'}`,
+        `error=${report.moduleImportError ?? report.error ?? attempt.detail.split('\n')[0] ?? 'unknown'}`,
+      ].join(' ');
+    });
+    throw new Error(
+      `Authenticode verification failed for ${installerPath}; the installer was deleted and will not be executed. ${AUTHENTICODE_SECURITY_MODULE} diagnostics: ${diagnostics.join(' | ')}`,
+    );
+  }
+
   return {
-    url: parsed.url ?? urls[0],
-    signatureVerified: parsed.status === 'Valid',
-    signerSubject: parsed.subject ?? 'Microsoft Corporation',
+    url: downloaded.url,
+    signatureVerified: true,
+    signerSubject:
+      verification.report?.signerSubject ?? REQUIRED_SIGNER_SUBJECT,
+    status: verification.report?.signatureStatus ?? 'Valid',
+    powershellHost: verification.label,
   };
 }
 
@@ -957,6 +1549,7 @@ export function prepareHostedWindowsRunner({
     executed: false,
     skipped: true,
     reason: 'Free disk already meets target buffer.',
+    destinationVolume: volumeRootOf(dest, { platform }),
     freeDiskBeforeGb,
     freeDiskAfterGb: freeDiskBeforeGb,
     reclaimedGb: 0,
@@ -964,6 +1557,7 @@ export function prepareHostedWindowsRunner({
     missingTargets: [],
     rejectedTargets: [],
     failedTargets: [],
+    offVolumeTargets: [],
   };
 
   if (needsDiskCleanup) {
@@ -1040,11 +1634,58 @@ export function prepareHostedWindowsRunner({
         : finalSdkVerification.problems),
     );
   }
+  // Storage topology evidence. GitHub-hosted Windows runners expose C: (OS and
+  // preinstalled toolchains) and D: (workspace and RUNNER_TEMP) as separate
+  // volumes, so cleanup must be evaluated against the volume that actually
+  // hosts the Chromium destination.
+  const volumeEvaluation = evaluateDestinationVolumes({
+    dest,
+    minimumFreeDiskGb,
+    platform,
+    exists,
+    measureFreeDisk,
+  });
+  for (const volume of volumeEvaluation.volumes) {
+    log(
+      `volume ${volume.volume}: ${
+        volume.freeDiskGb === null
+          ? 'unknown'
+          : `${volume.freeDiskGb.toFixed(1)} GB`
+      } free (${volume.meetsMinimum ? 'meets' : 'short of'} the ${minimumFreeDiskGb} GB floor)${
+        volume.isDestinationVolume ? ' <- Chromium destination volume' : ''
+      }`,
+    );
+  }
+  if (!volumeEvaluation.destinationMeetsMinimum) {
+    log(
+      volumeEvaluation.alternativeVolumes.length > 0
+        ? `destination volume ${volumeEvaluation.destinationVolume ?? 'unknown'} cannot satisfy the ${minimumFreeDiskGb} GB floor; alternative volume(s) that can: ${volumeEvaluation.alternativeVolumes
+            .map((entry) => `${entry.volume} (${entry.freeDiskGb.toFixed(1)} GB free)`)
+            .join(', ')}`
+        : `destination volume ${volumeEvaluation.destinationVolume ?? 'unknown'} cannot satisfy the ${minimumFreeDiskGb} GB floor and no other volume on this runner reaches it`,
+    );
+  }
+
   if (freeDiskAfterGb === null || freeDiskAfterGb < minimumFreeDiskGb) {
     problems.push(
       `Free disk after runner preparation is ${
         freeDiskAfterGb === null ? 'unknown' : `${freeDiskAfterGb.toFixed(1)} GB`
       } (requires at least ${minimumFreeDiskGb} GB before Chromium synchronization)`,
+    );
+  }
+  if (
+    freeDiskAfterGb !== null &&
+    freeDiskAfterGb < minimumFreeDiskGb &&
+    cleanup.executed
+  ) {
+    const offVolumeCount = cleanup.offVolumeTargets?.length ?? 0;
+    const onVolumeCount = cleanup.removedTargets.length;
+    problems.push(
+      `Disk cleanup reclaimed ${cleanup.reclaimedGb.toFixed(1)} GB on the Chromium destination volume ${
+        volumeEvaluation.destinationVolume ?? 'unknown'
+      } (measured): ${onVolumeCount} allowlisted target(s) removed on that volume, ${offVolumeCount} live on other volume(s) and cannot free space on it, ${
+        cleanup.missingTargets.length
+      } absent, ${cleanup.failedTargets.length} failed`,
     );
   }
 
@@ -1070,7 +1711,21 @@ export function prepareHostedWindowsRunner({
     reason: null,
     diskRegressionAnalysis: RUNNER_DISK_REGRESSION_ANALYSIS,
     before,
-    cleanup,
+    cleanup: {
+      executed: cleanup.executed,
+      skipped: cleanup.skipped,
+      reason: cleanup.reason,
+      destinationVolume: cleanup.destinationVolume ?? null,
+      freeDiskBeforeGb: cleanup.freeDiskBeforeGb,
+      freeDiskAfterGb: cleanup.freeDiskAfterGb,
+      reclaimedGb: cleanup.reclaimedGb,
+      removedTargets: cleanup.removedTargets,
+      missingTargets: cleanup.missingTargets,
+      rejectedTargets: cleanup.rejectedTargets,
+      failedTargets: cleanup.failedTargets,
+      offVolumeTargets: cleanup.offVolumeTargets ?? [],
+    },
+    volumes: volumeEvaluation,
     sdkProvisioning: {
       executed: sdkProvisioning.executed,
       alreadyInstalled: sdkProvisioning.alreadyInstalled,

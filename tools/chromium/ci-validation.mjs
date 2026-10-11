@@ -43,7 +43,10 @@ import {
   REQUIRED_SDK_VERSION,
 } from './lib/windows-toolchain.mjs';
 import { loadConfig, REPO_ROOT } from './lib/config.mjs';
-import { prepareHostedWindowsRunner } from './prepare-runner.mjs';
+import {
+  MINIMUM_PRE_SYNC_FREE_DISK_GB,
+  prepareHostedWindowsRunner,
+} from './prepare-runner.mjs';
 import { planStaging } from './stage-runtime.mjs';
 
 export const VALIDATION_LEVELS = Object.freeze(['gn', 'targeted', 'full']);
@@ -370,10 +373,25 @@ function makeSummary({
           '## Runner preparation (pre-sync)',
           '',
           `- Free disk before cleanup: \`${formatGb(capabilities.preparation.before?.freeDiskGb)}\``,
-          `- Free disk after preparation: \`${formatGb(capabilities.preparation.after?.freeDiskGb)}\` (reclaimed \`${formatGb(capabilities.preparation.cleanup?.reclaimedGb ?? 0)}\`)`,
+          `- Free disk after preparation: \`${formatGb(capabilities.preparation.after?.freeDiskGb)}\` (measured reclaimed \`${formatGb(capabilities.preparation.cleanup?.reclaimedGb ?? 0)}\`)`,
+          `- Cleanup accounting: \`${capabilities.preparation.cleanup?.removedTargets?.length ?? 0}\` removed, \`${capabilities.preparation.cleanup?.offVolumeTargets?.length ?? 0}\` on another volume, \`${capabilities.preparation.cleanup?.missingTargets?.length ?? 0}\` absent, \`${capabilities.preparation.cleanup?.failedTargets?.length ?? 0}\` failed`,
           `- Windows SDK before preparation: \`${capabilities.preparation.before?.windowsSdk ?? 'none'}\``,
           `- Windows SDK after preparation: \`${capabilities.preparation.after?.windowsSdk ?? 'none'}\` (installed=${capabilities.preparation.sdkProvisioning?.installed ?? false})`,
           `- Visual Studio / MSVC intact: \`${capabilities.preparation.after?.visualStudioIntact ?? false}\``,
+          ...(Array.isArray(capabilities.preparation.volumes?.volumes) &&
+          capabilities.preparation.volumes.volumes.length > 0
+            ? [
+                '',
+                '### Storage volumes measured on the runner',
+                '',
+                `| Volume | Free disk | Meets ${requirements?.freeDiskGb ?? MINIMUM_PRE_SYNC_FREE_DISK_GB} GB floor | Chromium destination |`,
+                '| --- | ---: | --- | --- |',
+                ...capabilities.preparation.volumes.volumes.map(
+                  (entry) =>
+                    `| \`${entry.volume}\` | ${formatGb(entry.freeDiskGb)} | ${entry.meetsMinimum ? 'yes' : 'no'} | ${entry.isDestinationVolume ? 'yes' : 'no'} |`,
+                ),
+              ]
+            : []),
           '',
         ]
       : []),
