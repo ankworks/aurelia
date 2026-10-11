@@ -57,6 +57,21 @@ reported **147.0 GB free before cleanup and 147.0 GB free after cleanup**
 (`0.0 GB` reclaimed). Deleting files on `C:` cannot increase free space on
 `D:`.
 
+Run `38105208893` then measured every volume on the same image after the
+Windows SDK `10.0.28000.0` installation:
+
+| Volume | Free disk (measured)   | Meets the 150 GB floor |
+| ------ | ---------------------- | ---------------------- |
+| `C:\`  | 30.3 GB                | no                     |
+| `D:\`  | 147.0 GB (destination) | no                     |
+
+No volume on a standard `windows-2025` runner reaches 150 GB, so
+`runner-preflight` reports **BLOCKED** with those measurements instead of
+starting a Chromium sync. A GN pass therefore requires a GitHub-hosted Windows
+larger runner (`runner_size: larger`, label `windows-latest-8-cores`,
+8 vCPU / 32 GB RAM / 300 GB SSD) or another machine that satisfies the
+unchanged floor. The floor itself is deliberately not lowered.
+
 `tools/chromium/prepare-runner.mjs` is therefore volume-aware:
 
 - It resolves the volume that hosts the Chromium destination and only deletes

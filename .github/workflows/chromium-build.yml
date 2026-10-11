@@ -11,9 +11,6 @@ name: Chromium build validation
 run-name: Chromium ${{ inputs.validation_level || 'gn' }} validation (${{ inputs.runner_size || 'standard' }} hosted runner)
 
 on:
-  push:
-    branches:
-      - arena/394b7945-aurelia
   workflow_dispatch:
     inputs:
       validation_level:
