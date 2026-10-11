@@ -96,7 +96,7 @@ describe('legacy build-plan tooling', () => {
       "id: 'gn-argument-policy'",
       "id: 'gn-generation'",
       "id: 'gn-effective-arguments'",
-      "id: 'gn-check'",
+      "setStage(context, 'gn-check', 'RUNNING'",
       "id: 'webui-resources'",
       "id: 'targeted-cpp'",
       "id: 'full-chrome'",

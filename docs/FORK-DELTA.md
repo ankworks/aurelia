@@ -28,7 +28,7 @@ patched-up copy of a Chromium subsystem.
 | Lines added to upstream files     | 26           |
 | Lines removed from upstream files | 0            |
 | Overlay files added               | 20           |
-| Overlay size                      | 87,565 bytes |
+| Overlay size                      | 89,411 bytes |
 
 Reproduce with:
 
@@ -49,7 +49,7 @@ changes Chromium behaviour; they register Aurelia code that lives in
 | `chrome/browser/resources/BUILD.gn`                | +2    | Build both resource bundles.                                |
 | `chrome/browser/ui/webui/BUILD.gn`                 | +2    | Link both controllers to the WebUI config registry.         |
 | `chrome/browser/ui/BUILD.gn`                       | +2    | Link controllers into browser UI.                           |
-| `chrome/browser/BUILD.gn`                          | +2    | Link controllers into the browser.                          |
+| `chrome/browser/BUILD.gn`                          | +2    | Link controllers into the non-Android browser graph.        |
 | `chrome/browser/ui/webui/chrome_web_ui_configs.cc` | +4    | Include and register both controllers in the desktop guard. |
 | `chrome/chrome_paks.gni`                           | +4    | Repack both generated paks with explicit dependencies.      |
 | `tools/gritsettings/resource_ids.spec`             | +8    | Allocate IDs for both generated GRDs, 20 resources each.    |

@@ -59,6 +59,28 @@ jobs:
       - name: Build
         run: npm run build
 
+  windows-bootstrap-regression:
+    name: Windows depot_tools GN bootstrap regression
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Test Windows bootstrap and batch invocation
+        run: npx vitest run tests/tools/depot-tools-bootstrap.test.mjs tests/tools/exec.test.mjs
+
   repository-checks:
     name: Pin, patch set, policy and policy scans
     runs-on: ubuntu-24.04

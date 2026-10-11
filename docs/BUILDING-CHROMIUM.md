@@ -103,10 +103,12 @@ uses Aurelia's pinned tooling in this order:
    only after all previous stages in the same run pass.
 
 The summary reports four separate milestones: `PREFLIGHT`, `CHROMIUM SYNC`,
-`GN GEN`, and `COMPILATION`. A `gn` run can therefore show
-`PREFLIGHT PASS`, `CHROMIUM SYNC PASS`, `GN GEN PASS`, and
-`COMPILATION NOT TESTED` together. That combination is the correct, honest
-result for GN-only validation.
+`GN-ONLY`, and `COMPILATION`. The `GN-ONLY` milestone includes policy,
+bootstrap, generation, effective arguments, target verification and scoped
+`gn check`; the stage table independently records `GN generation`. Thus a run
+with `gn gen` **PASS** and target verification **FAIL** reports `GN-ONLY FAIL`,
+not `GN GEN FAIL`. A fully passing `gn` run reports `GN-ONLY PASS` alongside
+`COMPILATION NOT TESTED`.
 
 The selected GN labels come from the checked-in Aurelia overlay and the
 `build_webui()` template at the configured Chromium pin. A missing label or
@@ -148,6 +150,24 @@ included.
 The browser artifact is unsigned development output. No release is published,
 no signing secrets are used, and no security feature is weakened to make CI pass.
 The workflow does not run a smoke test or claim the browser is tested.
+
+## Pinned Windows `depot_tools` Python bootstrap before GN
+
+At the configured depot_tools revision `1e43ae345913614898e3d6a1ef2680a0d47574e9`, `gn.bat` calls `python-bin/python3.bat gn.py`; `python-bin/python3.bat` refuses to run without `python3_bin_reldir.txt`. That pointer is intentionally Git-ignored, not part of the pinned checkout. `bootstrap/win_tools.bat` installs the Python version from the checked-out `bootstrap/manifest.txt` via CIPD and runs `bootstrap/bootstrap.py`, which generates the pointer and the versioned Python executable. The pinned source can be inspected at [the exact commit in the Chromium full mirror](https://github.com/chromium-full-mirror/chromium_tools_depot_tools/tree/1e43ae345913614898e3d6a1ef2680a0d47574e9).
+
+With `DEPOT_TOOLS_UPDATE=0`, `gclient.bat` skips `update_depot_tools.bat`, so `gclient sync` can pass without this GN prerequisite. **Do not** enable the updater: it checks out the moving `origin/main`. The validation driver instead runs `tools/chromium/bootstrap-depot-tools.mjs` after the GN argument policy check and before GN generation. It checks the depot_tools HEAD before and after calling only the pinned `bootstrap/win_tools.bat`, forces `DEPOT_TOOLS_UPDATE=0`, and verifies the generated pointer and Python executable. CIPD installs the version specified by the pinned manifest; no depot_tools Git ref is fetched or updated. A bootstrap failure stops validation; the GN policy, `gn gen`, effective arguments, target labels, and `gn check` are never bypassed.
+
+## Chromium 155 WebUI GN compatibility
+
+[Windows GN-only run 38126244950](https://github.com/ankworks/aurelia/actions/runs/38126244950) passed source sync, patch/overlay installation, GN argument policy and pinned depot_tools Python bootstrap, then reached `gn gen`. GN reported `Assignment had no effect` for `webui_context_type = "trusted"` in Aurelia's `chrome/browser/resources/newtab/BUILD.gn`. GN generation **did not pass** in that run; `gn check` and compilation were not reached.
+
+The subsequent [Windows GN-only run 38128649838](https://github.com/ankworks/aurelia/actions/runs/38128649838) **passed `gn gen`** (`35817` targets from `5040` files in `26870ms`) and the effective GN argument check. It then **failed at target-label verification**: `gn desc out\\Aurelia //chrome/browser/resources/aurelia:build_ts type` returned `Don't know how to display "type" for "action".` This is a validation-tool CLI mismatch, not a missing generated label; scoped `gn check` and compilation were not reached in that run.
+
+Chromium's pinned `DEPS` selects GN revision `cfcd774b98f3433e18b722f9a7ff06119825b8eb`. Its [description builder](https://github.com/ArthurSonzogni/gn/blob/cfcd774b98f3433e18b722f9a7ff06119825b8eb/src/gn/desc_builder.cc) emits `type` in the **full** description, but not when a field is requested; its [description command](https://github.com/ArthurSonzogni/gn/blob/cfcd774b98f3433e18b722f9a7ff06119825b8eb/src/gn/command_desc.cc) supports `--format=json`. Its [check command](https://github.com/ArthurSonzogni/gn/blob/cfcd774b98f3433e18b722f9a7ff06119825b8eb/src/gn/command_check.cc) accepts at most one optional target label or pattern. The updated validation driver checks exact labels, types, direct dependencies and declared outputs from full GN JSON, then invokes `gn check` separately for both controller targets. Local tests and a minimal fixture using GN built from that pinned source verify the CLI behavior. The later [Windows GN-only run 38130837908](https://github.com/ankworks/aurelia/actions/runs/38130837908) on Aurelia commit `47f32400aa44d03846d763487a6d07f601b6ac61` **passed** the complete GN-only pipeline: `gn gen` (35817 targets from 5040 files in 17759 ms), effective arguments, exact Aurelia target verification, and separate scoped `gn check` invocations for both controllers (`Header dependency check OK` twice). It did not compile resources, C++ or the browser; no executable or runtime test resulted.
+
+The [pinned Chromium `build_webui.gni`](https://github.com/chromium/chromium/blob/cfaadc5a132d78e1828635aa8405a499f3e14864/ui/webui/resources/tools/build_webui.gni) uses `invoker.webui_context_type` only inside `if (defined(invoker.ts_deps))`, when creating the `webui_path_mappings("build_path_map")` target. The [pinned path mappings template](https://github.com/chromium/chromium/blob/cfaadc5a132d78e1828635aa8405a499f3e14864/tools/typescript/webui_path_mappings.gni) passes that context to the TypeScript path-mapping script, which selects `chrome:` versus `chrome-untrusted:` import mappings. Other pinned Chromium WebUIs (for example, `chrome/browser/resources/compose/BUILD.gn` and `chrome/browser/resources/new_tab_shared/BUILD.gn`) set both `ts_deps` and their context. The offending New Tab BUILD file belongs to Aurelia's overlay, not pristine Chromium; `chrome://aurelia` already declared both variables. No GN argument or upstream patch creates the mismatch.
+
+The New Tab resource target now declares `ts_deps = [ "//ui/webui/resources/js:build_ts" ]` and retains `webui_context_type = "trusted"`. This makes the Chromium template consume the assignment and preserves the explicit trusted TypeScript mapping. The WebUI controller remains a `DefaultInternalWebUIConfig` on the `chrome://aurelia-newtab` host, and its data source/CSP, GRIT allocation, pak dependencies, and original Chromium New Tab remain unchanged. The build-time context mapping is **not** a substitute for runtime origin or CSP checks. The New Tab fix itself is overlay-only and does not change the Chromium pin. A subsequent source audit found that `chrome/browser/BUILD.gn` had unconditional dependencies on both controllers despite the `assert(!is_android)` declarations on both of their resource targets (and the New Tab controller target). The generated patch now adds those dependencies inside an existing `!is_android` block instead; patch metadata and the affected post-image digest were regenerated against pristine pinned pre-images. Static regression checks catch a missing `ts_deps`, a changed context, or an unguarded browser dependency; the successful Windows GN-only run above supplies separate GN evidence. Neither static checks nor GN-only validation establish compilation or runtime success.
 
 ## The Windows `git.bat` shim
 

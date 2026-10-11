@@ -2,7 +2,7 @@
   "baseRevision": "cfaadc5a132d78e1828635aa8405a499f3e14864",
   "baseVersion": "155.0.8059.40",
   "upstreamRepository": "https://github.com/chromium/chromium",
-  "recordedAt": "2026-10-10",
+  "recordedAt": "2026-10-11",
   "note": "Digests of the untouched upstream pre-images each patch expects. Records both sides of every change so patch verification is possible offline.",
   "preImages": [
     {
@@ -49,7 +49,7 @@
   "postImages": [
     {
       "path": "chrome/browser/BUILD.gn",
-      "sha256": "2c0e662b3f29048c823f7d5224310bbd62f19a3c2a35a8ebfc2c68b3961d0c15"
+      "sha256": "f441ddd23b727318bff7e1dbb47aec14fdc8b22a0ea16e06909c22c9f46f687c"
     },
     {
       "path": "chrome/browser/resources/BUILD.gn",

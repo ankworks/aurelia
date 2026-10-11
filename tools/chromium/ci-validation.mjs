@@ -38,6 +38,7 @@ import { isGithubHostedRunner } from '../ci/runner-environment.mjs';
 import { isMainModule } from '../lib/entry.mjs';
 import { captureCommand, resolveSpawn, withPathPrefix } from './lib/exec.mjs';
 import { describeGitEnvironment } from './lib/windows-git.mjs';
+import { scopedGnCheckCommands, verifyGnTargets } from './gn-targets.mjs';
 import {
   isSdkVersionCompatible,
   REQUIRED_SDK_VERSION,
@@ -106,6 +107,7 @@ export const COMPILE_STAGE_IDS = Object.freeze([
 /** Stages that prove GN configuration without compiling anything. */
 export const GN_STAGE_IDS = Object.freeze([
   'gn-argument-policy',
+  'depot-tools-bootstrap',
   'gn-generation',
   'gn-effective-arguments',
   'target-labels',
@@ -169,10 +171,10 @@ export function milestoneVerdicts(stages, mode) {
       detail: stages['pinned-sync']?.details ?? 'Not reached.',
     },
     {
-      key: 'gn-gen',
-      text: text('GN GEN', gn),
+      key: 'gn-only',
+      text: text('GN-ONLY', gn),
       status: gn,
-      detail: 'GN policy, gn gen, effective arguments, target labels, and gn check.',
+      detail: `gn gen: ${stages['gn-generation']?.status ?? 'NOT TESTED'}; complete gate also requires GN policy, bootstrap, effective arguments, target verification and scoped gn check.`,
     },
     {
       key: 'compilation',
@@ -639,9 +641,14 @@ function logCapture(file, args, cwd, env, logPath) {
   const header = [`$ ${file} ${args.join(' ')}`, `cwd: ${cwd}`, ''].join('\n');
   const write = existsSync(logPath) ? appendFileSync : writeFileSync;
   write(logPath, `${header}\n`);
-  const result = captureCommand({ file, args, cwd }, { env });
-  appendFileSync(logPath, result.endsWith('\n') ? result : `${result}\n`);
-  return result.trim();
+  try {
+    const result = captureCommand({ file, args, cwd }, { env });
+    appendFileSync(logPath, result.endsWith('\n') ? result : `${result}\n`);
+    return result.trim();
+  } catch (error) {
+    appendFileSync(logPath, `${error.message}\n`);
+    throw error;
+  }
 }
 
 function setStage(context, id, status, details) {
@@ -1217,6 +1224,26 @@ export async function runValidation({
     );
     writeFileSync(path.join(resolvedArtifacts, 'gn-arguments.txt'), `${renderedGnArgs}\n`);
 
+    // gclient.bat skips update_depot_tools.bat with DEPOT_TOOLS_UPDATE=0.
+    // Initialize the checked-out Windows Python via its standalone bootstrap,
+    // not the updater (which would check out moving origin/main). gn.bat needs
+    // python3_bin_reldir.txt even though gclient sync itself already passed.
+    if (process.platform === 'win32') {
+      await runCommandStage(context, {
+        id: 'depot-tools-bootstrap',
+        label: 'Initialize pinned depot_tools Python for GN without updating Git',
+        file: process.execPath,
+        args: [
+          path.join(REPO_ROOT, 'tools/chromium/bootstrap-depot-tools.mjs'),
+          toolsDir,
+          config.toolchain.depotTools.revision,
+        ],
+        cwd: REPO_ROOT,
+        env: childEnv,
+        deadlineAt,
+      });
+    }
+
     const argsGn = path.join(outDir, 'args.gn');
     await runCommandStage(context, {
       id: 'gn-generation',
@@ -1272,39 +1299,59 @@ export async function runValidation({
     });
 
     const targetCheckLog = path.join(context.logsDir, 'target-labels.log');
-    const targetLabels = [...WEBUI_RESOURCE_TARGETS, ...TARGETED_CPP_TARGETS];
-    const targetRows = [];
-    setStage(context, 'target-labels', 'RUNNING', 'Resolving every selected target in the generated GN graph.');
+    setStage(context, 'target-labels', 'RUNNING', 'Resolving selected targets, dependencies and declared outputs in the GN graph.');
     try {
-      for (const target of targetLabels) {
-        const targetType = logCapture(
-          'gn',
-          ['desc', path.relative(srcDir, outDir), target, 'type'],
-          srcDir,
-          childEnv,
-          targetCheckLog,
-        );
-        targetRows.push(`${target}: ${targetType}`);
-      }
+      const targetRows = verifyGnTargets({
+        srcDir,
+        outDir,
+        runDesc: (args) =>
+          logCapture('gn', args, srcDir, childEnv, targetCheckLog),
+      });
       setStage(context, 'target-labels', 'PASS', targetRows.join('; '));
     } catch (error) {
       setStage(context, 'target-labels', 'FAIL', error.message);
       throw error;
     }
 
-    await runCommandStage(context, {
-      id: 'gn-check',
-      label: 'Check Aurelia controller C++ dependency edges with GN',
-      file: 'gn',
-      args: [
-        'check',
-        path.relative(srcDir, outDir),
-        ...TARGETED_CPP_TARGETS,
-      ],
-      cwd: srcDir,
-      env: childEnv,
-      deadlineAt,
-    });
+    // Pinned GN accepts only one optional label/pattern per `gn check` command.
+    // Keep the stage RUNNING until both independent checks complete successfully.
+    setStage(context, 'gn-check', 'RUNNING', 'Checking both controller targets.');
+    try {
+      for (const { target, args } of scopedGnCheckCommands(
+        srcDir,
+        outDir,
+        TARGETED_CPP_TARGETS,
+      )) {
+        await runMonitoredCommand({
+          file: 'gn',
+          args,
+          cwd: srcDir,
+          env: childEnv,
+          stage: 'gn-check',
+          dest: context.dest,
+          logPath: path.join(
+            context.logsDir,
+            `gn-check-${target.split(':').at(-1)}.log`,
+          ),
+          usagePath: context.usagePath,
+          deadlineAt,
+          pollIntervalMs: context.pollIntervalMs,
+          minimumFreeDiskGb: diskReserveForMode(mode),
+          quiet: context.quiet,
+        });
+      }
+      setStage(
+        context,
+        'gn-check',
+        'PASS',
+        `GN checked ${TARGETED_CPP_TARGETS.join(' and ')}.`,
+      );
+    } catch (error) {
+      const status =
+        error.status === 'RESOURCE EXHAUSTED' ? 'RESOURCE EXHAUSTED' : 'FAIL';
+      setStage(context, 'gn-check', status, error.message);
+      throw error;
+    }
 
     if (mode !== 'gn') {
     await runCommandStage(context, {
@@ -1368,7 +1415,7 @@ export async function runValidation({
     writeSummary(context, 'PASS');
     log(
       mode === 'gn'
-        ? 'PASS: gn validation completed. GN GEN PASS only; COMPILATION NOT TESTED.'
+        ? 'PASS: GN-only validation completed (generation, target verification and scoped check); COMPILATION NOT TESTED.'
         : `PASS: ${mode} validation completed. Chromium compiler success is recorded only for commands that exited with code 0.`,
     );
     return { status: 'PASS', exitCode: 0, summary: path.join(resolvedArtifacts, 'build-summary.md') };
