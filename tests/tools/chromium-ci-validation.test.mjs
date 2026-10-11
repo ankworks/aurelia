@@ -57,7 +57,12 @@ function tempDirectory() {
 
 describe('hosted Chromium validation configuration', () => {
   it('accepts only the requested validation levels and runner sizes', () => {
-    expect(VALIDATION_LEVELS).toEqual(['gn', 'targeted', 'full']);
+    expect(VALIDATION_LEVELS).toEqual([
+      'gn',
+      'targeted-lite',
+      'targeted',
+      'full',
+    ]);
     expect(RUNNER_SIZES).toEqual(['standard', 'larger']);
     expect(
       parseValidationOptions(

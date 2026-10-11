@@ -13,6 +13,10 @@
  * Requirements depend on the validation mode:
  *   gn               GN generation and gn check only (no compilation). Uses the
  *                    reduced `buildRequirements.gnValidation` profile.
+ *   targeted-lite    Experimental resource-aware compilation (M1.9): WebUI
+ *                    resource compilation plus the Aurelia controller
+ *                    translation units. Uses the separate
+ *                    `buildRequirements.targetedLite` profile.
  *   targeted, full   Compilation. Uses the strict `buildRequirements.referenceBuilder`
  *                    gate (8 cores / 32 GB / 150 GB), which is never lowered.
  *
@@ -85,7 +89,12 @@ function toolVersion(
   return text.length > 0 ? text.split('\n')[0] : 'present';
 }
 
-export const PREFLIGHT_MODES = Object.freeze(['gn', 'targeted', 'full']);
+export const PREFLIGHT_MODES = Object.freeze([
+  'gn',
+  'targeted-lite',
+  'targeted',
+  'full',
+]);
 
 /** Documented fallbacks, used only when the pin configuration omits a profile. */
 const REFERENCE_BUILDER_FALLBACK = Object.freeze({
@@ -97,6 +106,11 @@ const GN_VALIDATION_FALLBACK = Object.freeze({
   cpuCores: 4,
   ramGb: 15.5,
   freeDiskGb: 150,
+});
+const TARGETED_LITE_FALLBACK = Object.freeze({
+  cpuCores: 4,
+  ramGb: 15.5,
+  freeDiskGb: 80,
 });
 
 function assertRequirementProfile(profile, name) {
@@ -112,8 +126,10 @@ function assertRequirementProfile(profile, name) {
 /**
  * Select the resource profile for a validation mode.
  *
- * `gn` gets the reduced GN-only profile; `targeted` and `full` always get the
- * strict reference builder. An unknown mode throws instead of guessing.
+ * `gn` gets the reduced GN-only profile; `targeted-lite` gets the separate
+ * experimental targeted-lite profile (same machine class, deliberately bounded
+ * compile scope); `targeted` and `full` always get the strict reference
+ * builder, which is never lowered. An unknown mode throws instead of guessing.
  */
 export function requirementsForMode(config, mode = 'full') {
   if (mode === 'gn') {
@@ -121,6 +137,14 @@ export function requirementsForMode(config, mode = 'full') {
       ...assertRequirementProfile(
         config?.buildRequirements?.gnValidation ?? GN_VALIDATION_FALLBACK,
         'gnValidation',
+      ),
+    };
+  }
+  if (mode === 'targeted-lite') {
+    return {
+      ...assertRequirementProfile(
+        config?.buildRequirements?.targetedLite ?? TARGETED_LITE_FALLBACK,
+        'targetedLite',
       ),
     };
   }
@@ -318,7 +342,9 @@ if (isMain) {
     if (argv.includes('--help') || argv.includes('-h')) {
       console.log(`Measure whether this machine meets Aurelia's Chromium builder resource gate. This does not authorize compilation.
 
-  --mode <m>      gn | targeted | full (default full; gn uses the reduced GN-only profile)
+  --mode <m>      gn | targeted-lite | targeted | full (default full; gn uses
+                  the reduced GN-only profile, targeted-lite its experimental
+                  bounded profile)
   --dest <dir>    directory that will hold the Chromium checkout
                   (defaults to AURELIA_CHROMIUM_DEST, then the repo parent)
   --record <file> write the capabilities JSON (used by the build manifest)

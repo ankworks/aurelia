@@ -50,9 +50,21 @@ import {
 } from './prepare-runner.mjs';
 import { planStaging } from './stage-runtime.mjs';
 
-export const VALIDATION_LEVELS = Object.freeze(['gn', 'targeted', 'full']);
+export const VALIDATION_LEVELS = Object.freeze([
+  'gn',
+  'targeted-lite',
+  'targeted',
+  'full',
+]);
 export const RUNNER_SIZES = Object.freeze(['standard', 'larger']);
 export const MAX_BUILD_JOBS = 4;
+/**
+ * Ninja job cap for the experimental targeted-lite profile. The standard
+ * GitHub-hosted Windows runner has 4 logical cores and 16 GB RAM; Chromium
+ * translation units plus PCHs are memory-hungry, so compilation parallelism is
+ * deliberately capped below the core count instead of saturating it.
+ */
+export const TARGETED_LITE_BUILD_JOBS = 2;
 export const RESOURCE_POLL_INTERVAL_MS = 30_000;
 export const INTERNAL_DEADLINE_MINUTES = 330;
 /**
@@ -114,9 +126,16 @@ export const GN_STAGE_IDS = Object.freeze([
   'gn-check',
 ]);
 
-/** Checkout/sync jobs for a mode: fewer on the GN-only profile. */
+/** Checkout/sync jobs for a mode: fewer on the reduced 4-core profiles. */
 export function syncJobsForMode(mode) {
-  return mode === 'gn' ? GN_SYNC_JOBS : MAX_BUILD_JOBS;
+  return mode === 'gn' || mode === 'targeted-lite'
+    ? GN_SYNC_JOBS
+    : MAX_BUILD_JOBS;
+}
+
+/** Ninja job cap for the compile stages of a mode. */
+export function compileJobsForMode(mode) {
+  return mode === 'targeted-lite' ? TARGETED_LITE_BUILD_JOBS : MAX_BUILD_JOBS;
 }
 
 /** Internal wall-clock deadline for a mode, always below the 360-minute job timeout. */
@@ -133,31 +152,18 @@ function combinedStatus(stages, ids) {
 }
 
 /**
- * The four user-facing milestones, kept separate on purpose: a GN pass must
- * never be reported as a compilation pass.
+ * The user-facing milestones, kept separate on purpose: a GN pass must never be
+ * reported as a compilation pass, and a resource pass must never be reported
+ * as an Aurelia C++ pass. The shape is mode-dependent on purpose:
+ * `targeted-lite` splits compilation into its two separately-tested scopes.
  */
 export function milestoneVerdicts(stages, mode) {
   const preflight = stages['runner-preflight']?.status ?? 'NOT TESTED';
   const sync = stages['pinned-sync']?.status ?? 'NOT TESTED';
   const gn = combinedStatus(stages, GN_STAGE_IDS);
-  let compilation;
-  let compilationDetail;
-  if (mode === 'gn') {
-    compilation = 'NOT TESTED';
-    compilationDetail =
-      'gn validation does not compile. WebUI resources, targeted C++, and full chrome were not built.';
-  } else if (mode === 'targeted') {
-    compilation = combinedStatus(stages, ['targeted-cpp']);
-    compilationDetail =
-      'Scope: the two Aurelia C++ source_set targets only. Full chrome was not built.';
-  } else {
-    compilation = combinedStatus(stages, ['targeted-cpp', 'full-chrome']);
-    compilationDetail =
-      'Scope: the Aurelia C++ targets and the full chrome target, both in this run.';
-  }
   const text = (label, status) =>
     status === 'PASS' ? `${label} PASS` : `${label} ${status}`;
-  return [
+  const head = [
     {
       key: 'preflight',
       text: text('PREFLIGHT', preflight),
@@ -176,6 +182,55 @@ export function milestoneVerdicts(stages, mode) {
       status: gn,
       detail: `gn gen: ${stages['gn-generation']?.status ?? 'NOT TESTED'}; complete gate also requires GN policy, bootstrap, effective arguments, target verification and scoped gn check.`,
     },
+  ];
+  if (mode === 'gn') {
+    return [
+      ...head,
+      {
+        key: 'compilation',
+        text: text('COMPILATION', 'NOT TESTED'),
+        status: 'NOT TESTED',
+        detail:
+          'gn validation does not compile. WebUI resources, targeted C++, and full chrome were not built.',
+      },
+    ];
+  }
+  if (mode === 'targeted-lite') {
+    // Resource compilation and Aurelia C++ compilation are different claims;
+    // each gets its own verdict so one can PASS while the other is NOT TESTED.
+    const webui = combinedStatus(stages, ['webui-resources']);
+    const cpp = combinedStatus(stages, ['targeted-cpp']);
+    return [
+      ...head,
+      {
+        key: 'webui-resources',
+        text: text('WEBUI RESOURCES', webui),
+        status: webui,
+        detail:
+          'Scope: TypeScript compilation, GRIT resource generation and pak packaging for both Aurelia WebUI pages.',
+      },
+      {
+        key: 'targeted-cpp',
+        text: text('AURELIA C++', cpp),
+        status: cpp,
+        detail:
+          'Scope: the Aurelia controller translation units compiled with the Windows MSVC toolchain (object-level). Source_set dependency compilation, linking and the chrome target are NOT TESTED in targeted-lite.',
+      },
+    ];
+  }
+  let compilation;
+  let compilationDetail;
+  if (mode === 'targeted') {
+    compilation = combinedStatus(stages, ['targeted-cpp']);
+    compilationDetail =
+      'Scope: the two Aurelia C++ source_set targets only. Full chrome was not built.';
+  } else {
+    compilation = combinedStatus(stages, ['targeted-cpp', 'full-chrome']);
+    compilationDetail =
+      'Scope: the Aurelia C++ targets and the full chrome target, both in this run.';
+  }
+  return [
+    ...head,
     {
       key: 'compilation',
       text: text('COMPILATION', compilation),
@@ -183,6 +238,23 @@ export function milestoneVerdicts(stages, mode) {
       detail: compilationDetail,
     },
   ];
+}
+
+/**
+ * One explicit sentence per mode stating what the run may claim. Used in the
+ * build summary so a limited-scope run can never be misread as a full one.
+ */
+export function validationScopeForMode(mode) {
+  if (mode === 'gn') {
+    return 'GN generation and checks only. Compilation is NOT TESTED in this mode.';
+  }
+  if (mode === 'targeted-lite') {
+    return 'EXPERIMENTAL, deliberately limited scope: WebUI TypeScript compilation, GRIT resource generation and pak packaging for both Aurelia pages, plus the Aurelia C++ controller translation units compiled with the Windows MSVC toolchain (object-level). Source_set dependency compilation, linking, the chrome target and runtime validation are NOT TESTED in this mode.';
+  }
+  if (mode === 'targeted') {
+    return 'WebUI resource compilation and the two Aurelia C++ source_set targets with their transitive dependencies. The full chrome target and runtime validation are NOT TESTED.';
+  }
+  return 'Adds the full chrome target after the prior stages pass in this run. Runtime validation is NOT TESTED.';
 }
 
 /** C++ source_set labels declared in the Aurelia overlay BUILD.gn files. */

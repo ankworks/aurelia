@@ -1,0 +1,42 @@
+# Aurelia Browser - Windows x64 experimental targeted-lite build arguments.
+#
+# Used only by the experimental `targeted-lite` validation level (M1.9,
+# resource-aware targeted compilation): WebUI TypeScript/GRIT/pak resource
+# compilation plus the Aurelia C++ controller translation units on a standard
+# GitHub-hosted runner (4 cores / 16 GB RAM). It is not a product
+# configuration and does not replace config/gn/win-x64-dev.gn.
+#
+# Rules for editing this file are identical to win-x64-dev.gn:
+#   1. every key must exist in Chromium at the pinned revision and be listed in
+#      the allowlist in tools/chromium/gn-args.mjs - no invented arguments;
+#   2. no argument may disable the sandbox, site isolation, certificate
+#      validation or normal process isolation for a product build;
+#   3. instrumented builds (is_asan / is_msan / is_tsan / is_ubsan) are not
+#      product builds and are rejected;
+#   4. every entry needs a reason, and the list stays as short as possible.
+
+# Same development Release mode as win-x64-dev.gn: optimised enough to compile
+# the same way the reviewed development configuration does.
+is_debug = false
+is_official_build = false
+is_component_build = true
+
+# The one deliberate difference from win-x64-dev.gn: no symbols at all. The
+# targeted-lite scope compiles translation units and never links or ships a
+# binary, so line tables buy nothing while their compiler work and PDB output
+# cost time and disk on a 4-core runner. Verified to exist at the pinned
+# revision: build/config/compiler/compiler.gni declares symbol_level (0 = no
+# symbols; upstream notes x86/x64 backtraces still carry function names).
+# blink_symbol_level (third_party/blink/renderer/config.gni) and v8_symbol_level
+# (v8/gni/v8.gni at the pinned V8 revision 56832c166a78bd1eb61068ac69876d6880eaabdf)
+# are also supported at this pin but are deliberately NOT set here: the
+# targeted-lite scope compiles no Blink or V8 objects, and v8_symbol_level
+# already derives from symbol_level. Setting them would change nothing this
+# mode builds.
+symbol_level = 0
+
+# Chromium's warnings are upstream's contract, not Aurelia's.
+treat_warnings_as_errors = false
+
+# First target platform.
+target_cpu = "x64"

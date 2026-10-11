@@ -92,6 +92,13 @@
       "diskSafetyReserveGb": 10,
       "notes": "Applies ONLY to validation_level=gn, which runs GN generation and gn check and never compiles. targeted and full keep the 150 GB referenceBuilder floor. RAM is 15.5 GB, not 16, because the OS-reported total on a nominal 16 GB machine can be slightly below 16. The GN disk floor of 80 GB is derived from evidence: depot_tools (~0.3 GB) + gclient sync --no-history shallow checkout of Chromium and its DEPS (~15-25 GB working tree + ~3-5 GB shallow .git for ~750 dependency repos at pinned SHA, per upstream fetch --no-history documentation and cl-shrink measurements of dependency .git overhead) + GN generation artifacts (~1-2 GB) + a 10 GB safety reserve that the run aborts before consuming. A 10 GB safety reserve is enforced during execution (independent of the pre-sync floor). Measured values are recorded per run in runner-capabilities.json."
     },
+    "targetedLite": {
+      "cpuCores": 4,
+      "ramGb": 15.5,
+      "freeDiskGb": 80,
+      "diskSafetyReserveGb": 15,
+      "notes": "EXPERIMENTAL targeted-lite profile (M1.9, resource-aware targeted compilation). Applies ONLY to validation_level=targeted-lite: WebUI TypeScript/GRIT/pak resource compilation plus the two Aurelia C++ controller translation units (object-level MSVC compile). This is a SEPARATE profile and does not lower the targeted/full referenceBuilder gate (8 cores / 32 GB / 150 GB), which is unchanged. CPU and RAM match the measured standard windows-2025 runner (4 vCPU / 16 GB; RAM is 15.5 rather than 16 because the OS-reported total on a nominal 16 GB machine can be slightly below 16). The 80 GB pre-sync disk floor reuses the GN-only evidence base (run 38130837908 measured ~29.5 GB shallow sync + ~1.8 GB GN generation = ~31.3 GB) plus headroom for bounded compile outputs: the mode runs script-based WebUI resource actions and two controller translation units, with no dependency-library build, no link step and no chrome target. A 15 GB runtime disk reserve (compilation reserve) and the 1.5 GB memory reserve are enforced during execution and the process tree is stopped before the reserve is consumed. Measured values are recorded per run in runner-capabilities.json and resource-usage.jsonl."
+    },
     "sandboxNote": "The development sandbox used for scaffolding has ~20 GB free disk and cannot hold or build a Chromium checkout. Only lightweight upstream file verification runs there."
   }
 }
