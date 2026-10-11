@@ -15,6 +15,13 @@ when the corresponding `autoninja` command exits with code `0` in the
 GitHub Actions run; runtime integration and smoke testing require separate
 evidence.
 
+M1.9 adds one experimental validation level, `targeted-lite`, for the first
+real compilation attempts on the free standard runner. Its scope is
+deliberately limited and is stated in every summary it produces: it never
+links, never builds `chrome`, and never lowers the strict `targeted`/`full`
+gate. See
+[CI-BUILD-FEASIBILITY.md](CI-BUILD-FEASIBILITY.md#experimental-resource-aware-targeted-lite-compilation-m19).
+
 The authoritative workflow is `.github/workflows/chromium-build.yml` (canonical
 source: `tools/ci/workflows/chromium-build.yml`). It has only the
 `workflow_dispatch` trigger. It does not run on `push`, `pull_request`, or a
@@ -22,10 +29,10 @@ schedule, and `gn` is the default validation level.
 
 ## Dispatch inputs
 
-| Input              | Options                            | Behavior                                                                                                                                                                                                                                                                                                 |
-| ------------------ | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `validation_level` | `gn` (default), `targeted`, `full` | `gn` runs GN-only validation (sync, patch/overlay, `gn gen`, `gn check`) and never compiles; it is the only level that can run on the standard runner. `targeted` and `full` must be chosen explicitly. `full` compiles `chrome` only after GN, WebUI resources, and targeted C++ pass in that same run. |
-| `runner_size`      | `standard` (default), `larger`     | `standard` targets GitHub-hosted `windows-2025`. It runs `gn` within the reduced GN profile and reports `BLOCKED` for `targeted` and `full` before Chromium source sync. `larger` targets the configured GitHub-hosted label `windows-latest-8-cores`.                                                   |
+| Input              | Options                                             | Behavior                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validation_level` | `gn` (default), `targeted-lite`, `targeted`, `full` | `gn` runs GN-only validation (sync, patch/overlay, `gn gen`, `gn check`) and never compiles. `targeted-lite` is the experimental resource-aware level (below). `targeted` and `full` require the strict 8-core / 32 GB builder and must be chosen explicitly. `full` compiles `chrome` only after GN, WebUI resources, and targeted C++ pass in that same run. |
+| `runner_size`      | `standard` (default), `larger`                      | `standard` targets GitHub-hosted `windows-2025`. It runs `gn` and `targeted-lite` within their reduced profiles and reports `BLOCKED` for `targeted` and `full` before Chromium source sync. `larger` targets the configured GitHub-hosted label `windows-latest-8-cores`.                                                                                     |
 
 The organization must provision a GitHub-hosted Windows larger runner, grant
 repository access, and configure the label before `larger` can start. The
@@ -48,29 +55,36 @@ disk floor is enforced by `tools/chromium/sync.mjs`.
 Requirements are selected per validation level by `tools/ci/check-builder.mjs`
 (`requirementsForMode`) from `config/chromium_version.json`:
 
-| Level              | Logical cores | RAM     | Free disk on Chromium volume | Purpose                                                                                 |
-| ------------------ | ------------- | ------- | ---------------------------- | --------------------------------------------------------------------------------------- |
-| `gn`               | 4             | 15.5 GB | 80 GB                        | Shallow (`--no-history`) sync, patch/overlay, `gn gen`, `gn check`. **No compilation.** |
-| `targeted`, `full` | 8             | 32 GB   | 150 GB                       | Adds WebUI resources, targeted C++, and (`full`) `chrome`. Full-history checkout.       |
+| Level              | Logical cores | RAM     | Free disk on Chromium volume | Purpose                                                                                                                                                                                       |
+| ------------------ | ------------- | ------- | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gn`               | 4             | 15.5 GB | 80 GB                        | Shallow (`--no-history`) sync, patch/overlay, `gn gen`, `gn check`. **No compilation.**                                                                                                       |
+| `targeted-lite`    | 4             | 15.5 GB | 80 GB                        | **Experimental.** Adds WebUI TypeScript/GRIT/pak compilation and the Aurelia controller translation units (object-level, Ninja `-j 2`). Shallow checkout. Never links, never builds `chrome`. |
+| `targeted`, `full` | 8             | 32 GB   | 150 GB                       | Adds WebUI resources, targeted C++ source_sets with their transitive dependencies, and (`full`) `chrome`. Full-history checkout. **Never lowered.**                                           |
 
 The `gn` profile is a reduced, GN-only profile. It exists because GN generation
 and dependency checking do not need the compile-time memory of a full build or a
-full-history checkout. The RAM value is 15.5 GB rather than 16 GB because the
-OS-reported total on a nominal 16 GB machine can be slightly below 16. The
-GN disk floor is 80 GB (evidence-based: see
+full-history checkout. The `targeted-lite` profile is a **separate experimental
+profile** (M1.9): it is not a lowered `targeted` gate. The strict
+`targeted`/`full` gate stays at 8 / 32 / 150 and is enforced unchanged. The RAM
+value is 15.5 GB rather than 16 GB because the OS-reported total on a nominal
+16 GB machine can be slightly below 16. The GN disk floor is 80 GB
+(evidence-based: see
 [CI-BUILD-FEASIBILITY.md](CI-BUILD-FEASIBILITY.md#gn-only-disk-policy-m13)),
-which fits on the measured 147 GB free of the windows-2025 D: volume. `gn` uses
-`gclient sync --no-history` (shallow, depth=1 for every synced repo) to keep
-the checkout footprint small; compilation modes require full history and the
-unchanged 150 GB floor.
+which fits on the measured 147 GB free of the windows-2025 D: volume. `gn` and
+`targeted-lite` use `gclient sync --no-history` (shallow, depth=1 for every
+synced repo) to keep the checkout footprint small; the strict `targeted`/`full`
+compilation modes require full history and the unchanged 150 GB floor.
 
-The runtime disk reserve is mode-aware: 10 GB for GN, 15 GB for compilation.
-The 1.5 GB RAM reserve is enforced during every run. `targeted` and `full`
-remain at the strict 8 / 32 / 150 gate and are never lowered.
+The runtime disk reserve is mode-aware: 10 GB for GN, 15 GB for compilation
+(including `targeted-lite`). The 1.5 GB RAM reserve is enforced during every
+run. `targeted` and `full` remain at the strict 8 / 32 / 150 gate and are never
+lowered.
 
 Under `gn`, the checkout uses at most **2** `gclient` sync jobs and the internal
-deadline is **240** minutes. `targeted` and `full` use four sync and Ninja jobs
-and a 330-minute deadline. All levels stay below the 360-minute job timeout.
+deadline is **240** minutes. `targeted-lite` also uses two sync jobs but Ninja
+is capped at **2** compile jobs (see the build configuration below).
+`targeted` and `full` use four sync and Ninja jobs and a 330-minute deadline.
+All levels stay below the 360-minute job timeout.
 
 GitHub's published public standard Windows runner is 4 vCPUs, 16 GB RAM, and
 14 GB SSD. Its exact usable space can vary; the live runner is measured rather
@@ -79,6 +93,27 @@ than assumed. GitHub documents a Windows larger-runner tier with 8 vCPUs,
 organization's configuration. See [CI-BUILD-FEASIBILITY.md](CI-BUILD-FEASIBILITY.md)
 for the published-resource references, historical runner measurement, and
 preflight policy.
+
+### Build configuration for targeted-lite
+
+`targeted-lite` generates its build graph from
+`config/gn/win-x64-targeted-lite.gn`, which is validated against the same
+allowlist in `tools/chromium/gn-args.mjs` as every other configuration. The
+only deliberate difference from `config/gn/win-x64-dev.gn` is `symbol_level = 0`.
+Each candidate option was checked against the pinned revision before use:
+
+| Option                   | Supported at the pin?                                                                                                | Used? | Why                                                                                                                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `is_debug = false`       | Yes (`build/config/compiler/compiler.gni`)                                                                           | Yes   | Same development Release mode as the reviewed development configuration.                                                                                                                   |
+| `symbol_level = 0`       | Yes (`build/config/compiler/compiler.gni`, values 0/1/2; upstream notes x86/x64 backtraces keep function names at 0) | Yes   | The targeted-lite scope compiles translation units and never links or ships a binary, so line tables buy nothing while compiler work and PDB output cost time and disk on a 4-core runner. |
+| `blink_symbol_level = 0` | Yes (`third_party/blink/renderer/config.gni`, default `-1` = auto)                                                   | No    | The targeted-lite scope compiles no Blink objects; setting it would change nothing this mode builds.                                                                                       |
+| `v8_symbol_level = 0`    | Yes (`v8/gni/v8.gni` at the pinned V8 revision `56832c166a78bd1eb61068ac69876d6880eaabdf`, default `= symbol_level`) | No    | Same reason; it already derives from `symbol_level`.                                                                                                                                       |
+
+No security-relevant switch exists in this configuration. The sandbox, site
+isolation, certificate validation and process isolation are always compiled in
+(see `config/gn/win-x64-dev.gn` for why they are not GN switches at all), and
+nothing in the targeted-lite configuration weakens trusted/untrusted WebUI
+boundaries. The pinned revision is not changed by this mode.
 
 ## Validation stages
 
@@ -94,43 +129,65 @@ uses Aurelia's pinned tooling in this order:
    generated `out/Aurelia/args.gn`, then validate those effective arguments.
 4. Resolve every selected label using `gn desc`; run scoped `gn check` for the
    two Aurelia C++ controller targets.
-5. For `targeted` and `full` only, build `build_ts`, `build_grd`, and `resources`
-   for both Aurelia WebUI pages; verify expected TypeScript, GRIT, resource-map,
-   and `.pak` outputs. `gn` skips this stage.
-6. For `targeted` and `full`, compile the two overlay `source_set` targets and
-   their C++ dependencies. `gn` skips this stage.
+5. For `targeted-lite`, `targeted`, and `full`, build `build_ts`, `build_grd`,
+   and `resources` for both Aurelia WebUI pages; verify expected TypeScript,
+   GRIT, resource-map, and `.pak` outputs. `gn` skips this stage. In
+   `targeted-lite` the Ninja job cap is 2 instead of 4.
+6. Then, per level:
+   - `targeted-lite` compiles the Aurelia C++ controller **translation units**
+     as exact Ninja object targets (`obj/<label-dir>/<label-name>/<source>.obj`
+     from the overlay `source_set` labels, verified against the generated Ninja
+     graph before compiling and against the `.obj` outputs afterwards). This is
+     an object-level compile with the real MSVC toolchain and Windows SDK: it
+     deliberately does not build the source_sets' transitive dependency
+     libraries or link anything, because on a 4-core runner that graph
+     (`//chrome/browser:browser_public_dependencies` and friends) is thousands
+     of translation units and belongs to `targeted` on the larger builder.
+   - `targeted` and `full` compile the two overlay `source_set` targets and
+     their C++ dependencies. `gn` skips this stage.
 7. For `full` only, compile Chromium's `chrome` target. This stage is reached
-   only after all previous stages in the same run pass.
+   only after all previous stages in the same run pass. In `targeted-lite` the
+   `chrome` and browser-artifact stages are explicitly reported **NOT TESTED**
+   (out of scope), never silently skipped.
 
-The summary reports four separate milestones: `PREFLIGHT`, `CHROMIUM SYNC`,
-`GN-ONLY`, and `COMPILATION`. The `GN-ONLY` milestone includes policy,
+The summary reports the milestones for the selected level. `gn`, `targeted`,
+and `full` report four: `PREFLIGHT`, `CHROMIUM SYNC`, `GN-ONLY`, and
+`COMPILATION`. `targeted-lite` reports five, splitting compilation into
+`WEBUI RESOURCES` and `AURELIA C++` so a resource pass can never be reported as
+an Aurelia C++ pass (and vice versa). The `GN-ONLY` milestone includes policy,
 bootstrap, generation, effective arguments, target verification and scoped
 `gn check`; the stage table independently records `GN generation`. Thus a run
 with `gn gen` **PASS** and target verification **FAIL** reports `GN-ONLY FAIL`,
 not `GN GEN FAIL`. A fully passing `gn` run reports `GN-ONLY PASS` alongside
-`COMPILATION NOT TESTED`.
+`COMPILATION NOT TESTED`. Every summary also states the level's claimable scope
+in one explicit sentence, records each stage's exact command, exit code,
+duration, and sampled peak memory/disk, and classifies failed compiler output
+(memory exhaustion, disk exhaustion, missing include, target resolution, link
+error, or source/compiler error) without suppressing the diagnostics.
 
 The selected GN labels come from the checked-in Aurelia overlay and the
 `build_webui()` template at the configured Chromium pin. A missing label or
-resource output is a failure, not a warning. All Ninja invocations are capped at
-four jobs. Resource usage is sampled every 30 seconds; the process tree is
-stopped if free disk falls below the 15 GB reserve or available RAM falls below
-1.5 GB. A 330-minute internal deadline leaves time for summary and artifact
-handling under GitHub's 360-minute job timeout. Only one validation run per
-repository is allowed at a time.
+resource output is a failure, not a warning. Ninja invocations are capped at
+four jobs on `targeted`/`full` and two jobs on `targeted-lite`. Resource usage
+is sampled every 30 seconds; the process tree is stopped if free disk falls
+below the mode's reserve or available RAM falls below 1.5 GB. A 330-minute
+internal deadline (240 for `gn`) leaves time for summary and artifact handling
+under GitHub's 360-minute job timeout. Only one validation run per repository is
+allowed at a time.
 
 ## Build states and evidence
 
-| State                         | Required evidence                                                                              |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| `INTEGRATION SOURCE VERIFIED` | Patch verification and overlay/fork-delta checks pass.                                         |
-| `CONFIGURATION VERIFIED`      | `gn gen` exits `0`, generated arguments pass policy, and selected targets resolve.             |
-| `WEBUI RESOURCES VERIFIED`    | The WebUI Ninja targets exit `0` and expected TypeScript/GRIT/pak outputs exist.               |
-| `TARGETED COMPILED`           | Both Aurelia C++ source-set Ninja targets exit `0` in `targeted` or `full` mode.               |
-| `COMPILED`                    | `autoninja ... chrome` exits `0` in explicit `full` mode in the same run.                      |
-| `RUNTIME INTEGRATED`          | Browser launches with Aurelia pages/resources available. Not established by compilation alone. |
-| `TESTED`                      | A separate runtime smoke test passes. Not currently run by `chromium-build.yml`.               |
-| `VERIFIED`                    | A supported physical Windows device passes the compatibility test.                             |
+| State                               | Required evidence                                                                                                                               |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INTEGRATION SOURCE VERIFIED`       | Patch verification and overlay/fork-delta checks pass.                                                                                          |
+| `CONFIGURATION VERIFIED`            | `gn gen` exits `0`, generated arguments pass policy, and selected targets resolve.                                                              |
+| `WEBUI RESOURCES VERIFIED`          | The WebUI Ninja targets exit `0` and expected TypeScript/GRIT/pak outputs exist.                                                                |
+| `AURELIA CONTROLLERS COMPILED (TU)` | In `targeted-lite`, both Aurelia controller translation units compile with MSVC and their `.obj` outputs exist. Not a dependency or link claim. |
+| `TARGETED COMPILED`                 | Both Aurelia C++ source-set Ninja targets exit `0` in `targeted` or `full` mode (with transitive dependencies).                                 |
+| `COMPILED`                          | `autoninja ... chrome` exits `0` in explicit `full` mode in the same run.                                                                       |
+| `RUNTIME INTEGRATED`                | Browser launches with Aurelia pages/resources available. Not established by compilation alone.                                                  |
+| `TESTED`                            | A separate runtime smoke test passes. Not currently run by `chromium-build.yml`.                                                                |
+| `VERIFIED`                          | A supported physical Windows device passes the compatibility test.                                                                              |
 
 Workflow step names are not evidence. The build summary records stage statuses,
 run URL, runner capabilities, pins, effective GN arguments, resource samples,

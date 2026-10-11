@@ -18,28 +18,29 @@ Each level below states what it proves and - explicitly - what it does not.
 
 `vitest`, no browser, no network. Covers Aurelia-owned logic and tooling:
 
-| Area                                                                                   | File                                                |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| Omnibox input classification (incl. blocked schemes, host:port)                        | `packages/core/src/url/classify.test.ts`            |
-| Secure DNS policy (fail-closed, redundancy, template validation)                       | `packages/core/src/net/secure-dns.test.ts`          |
-| Tracking-parameter stripping (allowlists, non-http inputs)                             | `packages/core/src/privacy/tracking-params.test.ts` |
-| Preference schema, store, derived values, invariants                                   | `packages/core/src/prefs/*.test.ts`                 |
-| Chromium pin validation / repository path handling                                     | `tests/tools/config.test.mjs`                       |
-| Patch parsing and rejection rules                                                      | `tests/tools/patch.test.mjs`                        |
-| Windows checkout line endings: CRLF/BOM rejection, `core.autocrlf=true` simulation     | `tests/tools/line-endings.test.mjs`                 |
-| GN argument policy (allowlist, forbidden keys, rendering)                              | `tests/tools/gn-args.test.mjs`                      |
-| Build driver plan (stages, profiles, `--only`, job limits, GN file selection)          | `tests/tools/build.test.mjs`                        |
-| Low-resource policy (verdicts, disk floors, job tiers, pagefile warnings)              | `tests/tools/low-resource.test.mjs`                 |
-| Packaging (zip structure, checksums, refusal above 4 GB)                               | `tests/tools/package.test.mjs`                      |
-| Staging completeness (`chrome.exe` plus required runtime files)                        | `tests/tools/stage-runtime.test.mjs`                |
-| Entry-point detection on Windows-style paths (the bug that killed a hosted run)        | `tests/tools/entry.test.mjs`                        |
-| PowerShell structural lint for `tools/**/*.ps1`                                        | `tests/tools/powershell.test.mjs`                   |
-| Windows bootstrap script invariants (modes, disk policy, no system changes)            | `tests/tools/windows-bootstrap.test.mjs`            |
-| Cross-platform child processes (Windows quoting, `cmd.exe` resolution)                 | `tests/tools/exec.test.mjs`                         |
-| Windows `git.bat` shim and pre-sync tooling diagnostics                                | `tests/tools/windows-git.test.mjs`                  |
-| Workflow policy, secret scanning, generated-file freshness, offline patch verification | `tests/tools/repository.test.mjs`                   |
-| Contrast of the declared design-token pairs                                            | `tests/design/check-contrast.test.mjs`              |
-| Workflow definitions and Windows-native-stderr handling                                | `tests/tools/workflows.test.mjs`                    |
+| Area                                                                                        | File                                                |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| Omnibox input classification (incl. blocked schemes, host:port)                             | `packages/core/src/url/classify.test.ts`            |
+| Secure DNS policy (fail-closed, redundancy, template validation)                            | `packages/core/src/net/secure-dns.test.ts`          |
+| Tracking-parameter stripping (allowlists, non-http inputs)                                  | `packages/core/src/privacy/tracking-params.test.ts` |
+| Preference schema, store, derived values, invariants                                        | `packages/core/src/prefs/*.test.ts`                 |
+| Chromium pin validation / repository path handling                                          | `tests/tools/config.test.mjs`                       |
+| Patch parsing and rejection rules                                                           | `tests/tools/patch.test.mjs`                        |
+| Windows checkout line endings: CRLF/BOM rejection, `core.autocrlf=true` simulation          | `tests/tools/line-endings.test.mjs`                 |
+| GN argument policy (allowlist, forbidden keys, rendering)                                   | `tests/tools/gn-args.test.mjs`                      |
+| Build driver plan (stages, profiles, `--only`, job limits, GN file selection)               | `tests/tools/build.test.mjs`                        |
+| Resource-aware targeted-lite compilation (policy, commands, targets, safeguards, reporting) | `tests/tools/targeted-lite.test.mjs`                |
+| Low-resource policy (verdicts, disk floors, job tiers, pagefile warnings)                   | `tests/tools/low-resource.test.mjs`                 |
+| Packaging (zip structure, checksums, refusal above 4 GB)                                    | `tests/tools/package.test.mjs`                      |
+| Staging completeness (`chrome.exe` plus required runtime files)                             | `tests/tools/stage-runtime.test.mjs`                |
+| Entry-point detection on Windows-style paths (the bug that killed a hosted run)             | `tests/tools/entry.test.mjs`                        |
+| PowerShell structural lint for `tools/**/*.ps1`                                             | `tests/tools/powershell.test.mjs`                   |
+| Windows bootstrap script invariants (modes, disk policy, no system changes)                 | `tests/tools/windows-bootstrap.test.mjs`            |
+| Cross-platform child processes (Windows quoting, `cmd.exe` resolution)                      | `tests/tools/exec.test.mjs`                         |
+| Windows `git.bat` shim and pre-sync tooling diagnostics                                     | `tests/tools/windows-git.test.mjs`                  |
+| Workflow policy, secret scanning, generated-file freshness, offline patch verification      | `tests/tools/repository.test.mjs`                   |
+| Contrast of the declared design-token pairs                                                 | `tests/design/check-contrast.test.mjs`              |
+| Workflow definitions and Windows-native-stderr handling                                     | `tests/tools/workflows.test.mjs`                    |
 
 Run: `npm test`.
 
