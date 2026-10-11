@@ -21,14 +21,113 @@ export class PatchParseError extends Error {
 }
 
 /**
+ * The patch text is not the byte-for-byte form `git diff` emits.
+ *
+ * This is a separate class from a structural parse failure because the cause
+ * and the remedy are different: the diff is fine, the *file* was rewritten by
+ * something between `git diff` and here (almost always a checkout that applied
+ * `core.autocrlf`). See `.gitattributes` at the repository root.
+ */
+export class PatchEncodingError extends PatchParseError {
+  /**
+   * @param {string} message
+   * @param {{problem: string, count: number, firstLine: number|null}} details
+   */
+  constructor(message, { problem, count, firstLine }) {
+    super(message);
+    this.name = 'PatchEncodingError';
+    this.problem = problem;
+    this.count = count;
+    this.firstLine = firstLine;
+  }
+}
+
+/** Remediation appended to every encoding error, so the fix is in the message. */
+export const CANONICAL_BYTES_REMEDY =
+  'Aurelia patches are SHA-256 verified and re-applied byte-for-byte, so they must be stored as the ' +
+  'bytes `git diff` produced: LF line endings, no byte-order mark, no re-encoding. This normally means ' +
+  'the checkout converted the file - Git for Windows defaults to core.autocrlf=true, and only a ' +
+  '.gitattributes rule overrides it (see .gitattributes: `*.patch -text`). Confirm the rule applies ' +
+  'with `git check-attr text -- <patch>` (expected: `unset`), then restore the file from the index ' +
+  '(`git checkout -- <patch>`) or clone the repository again.';
+
+/**
+ * Problems that make the text impossible to be a canonical `git diff` output.
+ *
+ * Only the two transformations a checkout can perform are reported - CRLF
+ * expansion and the UTF-8 byte-order mark - so a genuine upstream change can
+ * never be hidden behind this check.
+ *
+ * @param {string} patchText
+ * @returns {Array<{problem: 'crlf'|'bom', count: number, firstLine: number|null}>}
+ */
+export function findEncodingProblems(patchText) {
+  const problems = [];
+  const lines = patchText.split('\n');
+
+  const bom = patchText.charCodeAt(0) === 0xfeff;
+  if (bom) {
+    problems.push({ problem: 'bom', count: 1, firstLine: 1 });
+  }
+
+  let crlf = 0;
+  let crlfFirstLine = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].endsWith('\r')) {
+      crlf += 1;
+      if (crlfFirstLine === null) {
+        crlfFirstLine = index + 1;
+      }
+    }
+  }
+  if (crlf > 0) {
+    problems.push({ problem: 'crlf', count: crlf, firstLine: crlfFirstLine });
+  }
+
+  return problems;
+}
+
+/**
+ * Throw unless `patchText` is the canonical form of a patch file.
+ * Called by `parsePatch`, and usable directly by callers that want to report
+ * the problem without attempting a parse.
+ *
+ * @param {string} patchText
+ * @param {string} [subject] File name to name in the error message.
+ */
+export function assertCanonicalPatchBytes(patchText, subject = 'patch') {
+  for (const problem of findEncodingProblems(patchText)) {
+    if (problem.problem === 'bom') {
+      throw new PatchEncodingError(
+        `${subject} starts with a UTF-8 byte-order mark; ${CANONICAL_BYTES_REMEDY}`,
+        problem,
+      );
+    }
+    throw new PatchEncodingError(
+      `${subject} has Windows (CRLF) line endings on ${problem.count} line(s), first at line ${problem.firstLine}; ` +
+        'a line ending in CR cannot be matched by the `$` anchor of the unified-diff header pattern, ' +
+        `so no file header is recognised and the diff cannot be parsed. ${CANONICAL_BYTES_REMEDY}`,
+      problem,
+    );
+  }
+}
+
+/**
  * Parse a unified diff into structured data.
  *
  * @param {string} patchText
  * @returns {{files: Array<{oldPath: string, newPath: string, added: number,
  *   removed: number, hunks: number, isNewFile: boolean, isDeleted: boolean}>,
  *   addedLines: number, removedLines: number}}
+ * @throws {PatchEncodingError} when the text is not canonical LF/no-BOM bytes
+ * @throws {PatchParseError} when the text is canonical but not a valid diff
  */
 export function parsePatch(patchText) {
+  // Check the bytes before the structure: a CRLF or BOM-mangled patch would
+  // otherwise fail here as "unexpected content before first file header", which
+  // names the symptom rather than the cause.
+  assertCanonicalPatchBytes(patchText);
+
   const lines = patchText.split('\n');
   const files = [];
   let current = null;

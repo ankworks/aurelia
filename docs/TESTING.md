@@ -26,6 +26,7 @@ Each level below states what it proves and - explicitly - what it does not.
 | Preference schema, store, derived values, invariants                                   | `packages/core/src/prefs/*.test.ts`                 |
 | Chromium pin validation / repository path handling                                     | `tests/tools/config.test.mjs`                       |
 | Patch parsing and rejection rules                                                      | `tests/tools/patch.test.mjs`                        |
+| Windows checkout line endings: CRLF/BOM rejection, `core.autocrlf=true` simulation     | `tests/tools/line-endings.test.mjs`                 |
 | GN argument policy (allowlist, forbidden keys, rendering)                              | `tests/tools/gn-args.test.mjs`                      |
 | Build driver plan (stages, profiles, `--only`, job limits, GN file selection)          | `tests/tools/build.test.mjs`                        |
 | Low-resource policy (verdicts, disk floors, job tiers, pagefile warnings)              | `tests/tools/low-resource.test.mjs`                 |
@@ -50,7 +51,9 @@ _Proves:_ the logic is right. _Does not prove:_ anything about Chromium.
 
 - the pin is exact, immutable, and its `baseRevision` matches the patch set;
 - generated files (version header, design tokens) match their generators;
-- the patch set verifies offline, touching only expected paths;
+- the patch set verifies offline, touching only expected paths, and is stored
+  with the canonical LF bytes its SHA-256 depends on
+  (`tools/ci/check-line-endings.mjs`);
 - the overlay contains only Chromium-native files and no Node.js runtime files;
 - workflows are SHA-pinned, minimally privileged and policy-compliant, and the
   deployed copies are byte-identical to the canonical ones;
@@ -68,7 +71,9 @@ _Proves:_ the repository is internally consistent. _Does not prove:_ it compiles
 
 1. fetches each upstream pre-image at the exact pinned revision;
 2. compares SHA-256 digests against `chromium/verification/pre-images.json`;
-3. applies the patch to those pre-images with `git apply`;
+3. applies the patch to those pre-images with `git apply` (in a scratch
+   repository pinned to `core.autocrlf=false`, so a machine whose global config
+   expands line endings cannot produce a false post-image mismatch);
 4. compares every resulting file against the recorded post-image digest.
 
 _Proves:_ the patch targets that revision and applies cleanly to unmodified

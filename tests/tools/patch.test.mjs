@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PatchParseError,
+  findEncodingProblems,
   findPathProblems,
   parsePatch,
 } from '../../tools/chromium/lib/patch.mjs';
@@ -65,6 +66,59 @@ new mode 100755
     expect(() => parsePatch('# just a comment\n')).toThrow(
       /unexpected content before first file header/,
     );
+  });
+
+  it('rejects a CRLF patch file and says what to fix', () => {
+    // Regression: actions/runs/38108794402. A Windows checkout with
+    // core.autocrlf=true turned the committed LF patch into CRLF. `\r` is an
+    // ECMAScript LineTerminator, so `^diff --git a/(.+) b/(.+)$` cannot match
+    // the header and the parser used to report the misleading
+    // "unexpected content before first file header".
+    const crlf = SIMPLE_PATCH.replaceAll('\n', '\r\n');
+    let thrown = null;
+    try {
+      parsePatch(crlf);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PatchParseError);
+    expect(thrown?.name).toBe('PatchEncodingError');
+    expect(thrown?.problem).toBe('crlf');
+    expect(thrown?.message).toMatch(/CRLF/);
+    expect(thrown?.message).toMatch(/gitattributes/);
+    expect(thrown?.message).not.toMatch(/unexpected content/);
+  });
+
+  it('rejects a byte-order mark', () => {
+    let thrown = null;
+    try {
+      parsePatch(`\uFEFF${SIMPLE_PATCH}`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.name).toBe('PatchEncodingError');
+    expect(thrown?.problem).toBe('bom');
+    expect(thrown?.message).toMatch(/byte-order mark/);
+  });
+
+  it('reports every offending line ending, not just the first', () => {
+    expect(findEncodingProblems(SIMPLE_PATCH)).toEqual([]);
+    expect(findEncodingProblems(SIMPLE_PATCH.replaceAll('\n', '\r\n'))).toEqual(
+      [expect.objectContaining({ problem: 'crlf', firstLine: 1 })],
+    );
+    const both = findEncodingProblems(
+      `\uFEFF${SIMPLE_PATCH.replaceAll('\n', '\r\n')}`,
+    );
+    expect(both.map((entry) => entry.problem).sort()).toEqual(['bom', 'crlf']);
+    expect(both.find((entry) => entry.problem === 'crlf').count).toBe(
+      SIMPLE_PATCH.split('\n').length - 1,
+    );
+  });
+
+  it('keeps structural errors structural for canonical LF patches', () => {
+    expect(() => parsePatch(SIMPLE_PATCH)).not.toThrow();
+    expect(() => parsePatch('')).toThrow(/no file sections/);
+    expect(() => parsePatch('# just a comment\n')).toThrow(PatchParseError);
   });
 
   it('rejects unexpected content inside a hunk', () => {

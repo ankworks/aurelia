@@ -29,6 +29,7 @@ import { gnArgFiles, validateGnArgs } from '../chromium/gn-args.mjs';
 import { checkContrast } from '../design/check-contrast.mjs';
 import { checkWebUIResources } from './check-webui-resources.mjs';
 import { checkDocsLinks } from './check-docs-links.mjs';
+import { checkLineEndings } from './check-line-endings.mjs';
 import { checkPowerShellScripts } from './check-powershell.mjs';
 import { compareWorkflows } from './install-workflows.mjs';
 import { checkWorkflows } from './workflow-policy.mjs';
@@ -125,6 +126,19 @@ export function runFastChecks({ log = console.log } = {}) {
             .filter((check) => !check.ok)
             .map((check) => `${check.name}: ${check.details}`)
             .join('; '),
+    );
+
+    // A Windows checkout (core.autocrlf=true) rewrites text files to CRLF unless
+    // .gitattributes says otherwise. The patch files are SHA-256 verified, so
+    // fast CI - which runs on Linux, where the bug is invisible - checks the
+    // policy that protects them. See tools/ci/check-line-endings.mjs.
+    const lineEndings = checkLineEndings({ config });
+    record(
+      'patch files are protected from line-ending conversion',
+      lineEndings.ok,
+      lineEndings.ok
+        ? `${lineEndings.checked} patch file(s) pinned to LF by ${lineEndings.attributesFile}`
+        : lineEndings.problems.join('; '),
     );
 
     const overlayFiles = collectOverlayFiles(overlayDir(config));
