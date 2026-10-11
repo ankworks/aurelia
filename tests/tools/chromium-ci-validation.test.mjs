@@ -171,7 +171,7 @@ describe('hosted Chromium validation configuration', () => {
       "id: 'gn-generation'",
       "id: 'gn-effective-arguments'",
       "setStage(context, 'target-labels', 'RUNNING'",
-      "id: 'gn-check'",
+      "setStage(context, 'gn-check', 'RUNNING'",
       "id: 'webui-resources'",
       "if (mode === 'targeted' || mode === 'full')",
       "id: 'targeted-cpp'",

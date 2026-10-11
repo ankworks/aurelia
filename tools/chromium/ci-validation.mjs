@@ -38,6 +38,7 @@ import { isGithubHostedRunner } from '../ci/runner-environment.mjs';
 import { isMainModule } from '../lib/entry.mjs';
 import { captureCommand, resolveSpawn, withPathPrefix } from './lib/exec.mjs';
 import { describeGitEnvironment } from './lib/windows-git.mjs';
+import { scopedGnCheckCommands, verifyGnTargets } from './gn-targets.mjs';
 import {
   isSdkVersionCompatible,
   REQUIRED_SDK_VERSION,
@@ -640,9 +641,14 @@ function logCapture(file, args, cwd, env, logPath) {
   const header = [`$ ${file} ${args.join(' ')}`, `cwd: ${cwd}`, ''].join('\n');
   const write = existsSync(logPath) ? appendFileSync : writeFileSync;
   write(logPath, `${header}\n`);
-  const result = captureCommand({ file, args, cwd }, { env });
-  appendFileSync(logPath, result.endsWith('\n') ? result : `${result}\n`);
-  return result.trim();
+  try {
+    const result = captureCommand({ file, args, cwd }, { env });
+    appendFileSync(logPath, result.endsWith('\n') ? result : `${result}\n`);
+    return result.trim();
+  } catch (error) {
+    appendFileSync(logPath, `${error.message}\n`);
+    throw error;
+  }
 }
 
 function setStage(context, id, status, details) {
@@ -1293,39 +1299,59 @@ export async function runValidation({
     });
 
     const targetCheckLog = path.join(context.logsDir, 'target-labels.log');
-    const targetLabels = [...WEBUI_RESOURCE_TARGETS, ...TARGETED_CPP_TARGETS];
-    const targetRows = [];
-    setStage(context, 'target-labels', 'RUNNING', 'Resolving every selected target in the generated GN graph.');
+    setStage(context, 'target-labels', 'RUNNING', 'Resolving selected targets, dependencies and declared outputs in the GN graph.');
     try {
-      for (const target of targetLabels) {
-        const targetType = logCapture(
-          'gn',
-          ['desc', path.relative(srcDir, outDir), target, 'type'],
-          srcDir,
-          childEnv,
-          targetCheckLog,
-        );
-        targetRows.push(`${target}: ${targetType}`);
-      }
+      const targetRows = verifyGnTargets({
+        srcDir,
+        outDir,
+        runDesc: (args) =>
+          logCapture('gn', args, srcDir, childEnv, targetCheckLog),
+      });
       setStage(context, 'target-labels', 'PASS', targetRows.join('; '));
     } catch (error) {
       setStage(context, 'target-labels', 'FAIL', error.message);
       throw error;
     }
 
-    await runCommandStage(context, {
-      id: 'gn-check',
-      label: 'Check Aurelia controller C++ dependency edges with GN',
-      file: 'gn',
-      args: [
-        'check',
-        path.relative(srcDir, outDir),
-        ...TARGETED_CPP_TARGETS,
-      ],
-      cwd: srcDir,
-      env: childEnv,
-      deadlineAt,
-    });
+    // Pinned GN accepts only one optional label/pattern per `gn check` command.
+    // Keep the stage RUNNING until both independent checks complete successfully.
+    setStage(context, 'gn-check', 'RUNNING', 'Checking both controller targets.');
+    try {
+      for (const { target, args } of scopedGnCheckCommands(
+        srcDir,
+        outDir,
+        TARGETED_CPP_TARGETS,
+      )) {
+        await runMonitoredCommand({
+          file: 'gn',
+          args,
+          cwd: srcDir,
+          env: childEnv,
+          stage: 'gn-check',
+          dest: context.dest,
+          logPath: path.join(
+            context.logsDir,
+            `gn-check-${target.split(':').at(-1)}.log`,
+          ),
+          usagePath: context.usagePath,
+          deadlineAt,
+          pollIntervalMs: context.pollIntervalMs,
+          minimumFreeDiskGb: diskReserveForMode(mode),
+          quiet: context.quiet,
+        });
+      }
+      setStage(
+        context,
+        'gn-check',
+        'PASS',
+        `GN checked ${TARGETED_CPP_TARGETS.join(' and ')}.`,
+      );
+    } catch (error) {
+      const status =
+        error.status === 'RESOURCE EXHAUSTED' ? 'RESOURCE EXHAUSTED' : 'FAIL';
+      setStage(context, 'gn-check', status, error.message);
+      throw error;
+    }
 
     if (mode !== 'gn') {
     await runCommandStage(context, {

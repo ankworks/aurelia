@@ -113,7 +113,10 @@ describe('Windows pinned depot_tools bootstrap for GN', () => {
     const policy = driver.indexOf("id: 'gn-argument-policy'");
     const bootstrap = driver.indexOf("id: 'depot-tools-bootstrap'", policy);
     const generation = driver.indexOf("id: 'gn-generation'", bootstrap);
-    const gnCheck = driver.indexOf("id: 'gn-check'", generation);
+    const gnCheck = driver.indexOf(
+      "setStage(context, 'gn-check', 'RUNNING'",
+      generation,
+    );
     expect(policy).toBeGreaterThan(-1);
     expect(bootstrap).toBeGreaterThan(policy);
     expect(generation).toBeGreaterThan(bootstrap);
