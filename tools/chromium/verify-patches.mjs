@@ -33,7 +33,7 @@ import {
   overlayDir,
   verificationDir,
 } from './lib/config.mjs';
-import { parsePatch, findPathProblems } from './lib/patch.mjs';
+import { parsePatch, findPathProblems, findEncodingProblems, CANONICAL_BYTES_REMEDY } from './lib/patch.mjs';
 import { extractPreImages, makeScratchDir, run, sha256 } from './lib/upstream.mjs';
 
 export function listPatchFiles(directory) {
@@ -103,7 +103,11 @@ export function verifyOffline(config = loadConfig()) {
 
   for (const patchName of patchFiles) {
     const patchPath = path.join(patchDirectory, patchName);
-    const patchText = readFileSync(patchPath, 'utf8');
+    // Read bytes, not decoded text: the digest below is over the bytes on disk,
+    // and the encoding check must see exactly what git checked out. Decoding and
+    // re-encoding would silently repair invalid UTF-8 and change the digest.
+    const patchBytes = readFileSync(patchPath);
+    const patchText = patchBytes.toString('utf8');
     const metaPath = path.join(patchDirectory, patchName.replace(/\.patch$/, '.meta.json'));
     const meta = existsSync(metaPath) ? readJson(metaPath) : null;
 
@@ -112,6 +116,59 @@ export function verifyOffline(config = loadConfig()) {
       meta !== null,
       meta === null ? 'missing .meta.json' : path.basename(metaPath),
     );
+
+    // Line endings first. A CRLF checkout is a checkout problem with a checkout
+    // remedy, and reporting it as a generic parse failure (or worse, as an
+    // upstream change) sends the reader to the wrong file. The patch is NOT
+    // repaired here: normalising it would defeat the digest check below.
+    const encodingProblems = findEncodingProblems(patchText);
+    push(
+      `${patchName}: stored with canonical LF bytes`,
+      encodingProblems.length === 0,
+      encodingProblems.length === 0
+        ? `${patchBytes.length} bytes, no CRLF, no byte-order mark`
+        : encodingProblems
+            .map((problem) =>
+              problem.problem === 'bom'
+                ? `UTF-8 byte-order mark at byte 0. ${CANONICAL_BYTES_REMEDY}`
+                : `CRLF line endings on ${problem.count} line(s), first at line ${problem.firstLine}. ${CANONICAL_BYTES_REMEDY}`,
+            )
+            .join(' '),
+    );
+
+    if (meta !== null) {
+      // These do not depend on the parse. A mangled checkout must report both
+      // "not canonical bytes" and "digest mismatch": the first says what to fix,
+      // the second says the artifact is no longer the reviewed one. Stopping at
+      // the parse error would report less than the evidence shows.
+      const actualDigest = sha256(patchBytes);
+      push(
+        `${patchName}: patch digest matches metadata`,
+        meta.sha256 === actualDigest,
+        meta.sha256 === actualDigest
+          ? `${meta.sha256.slice(0, 16)}... over ${patchBytes.length} byte(s)`
+          : `metadata=${String(meta.sha256).slice(0, 16)}... on-disk=${actualDigest.slice(0, 16)}...`,
+      );
+
+      push(
+        `${patchName}: metadata targets the pinned revision`,
+        meta.baseRevision === config.chromium.revision,
+        `meta=${meta.baseRevision} config=${config.chromium.revision}`,
+      );
+
+      const missingDigests = meta.files.filter(
+        (file) =>
+          !/^[0-9a-f]{64}$/.test(file.preImageSha256 ?? '') ||
+          !/^[0-9a-f]{64}$/.test(file.postImageSha256 ?? ''),
+      );
+      push(
+        `${patchName}: records pre/post digests for every file`,
+        missingDigests.length === 0,
+        missingDigests.length === 0
+          ? 'ok'
+          : missingDigests.map((file) => file.path).join(', '),
+      );
+    }
 
     let parsed = null;
     try {
@@ -135,20 +192,6 @@ export function verifyOffline(config = loadConfig()) {
 
     if (meta === null) continue;
 
-    push(
-      `${patchName}: patch digest matches metadata`,
-      meta.sha256 === sha256(Buffer.from(patchText, 'utf8')),
-      meta.sha256 === sha256(Buffer.from(patchText, 'utf8'))
-        ? meta.sha256.slice(0, 16)
-        : 'metadata digest differs from patch contents',
-    );
-
-    push(
-      `${patchName}: metadata targets the pinned revision`,
-      meta.baseRevision === config.chromium.revision,
-      `meta=${meta.baseRevision} config=${config.chromium.revision}`,
-    );
-
     const metaPaths = meta.files.map((file) => file.path).sort();
     const parsedPaths = parsed.files.map((file) => file.newPath).sort();
     push(
@@ -156,19 +199,6 @@ export function verifyOffline(config = loadConfig()) {
       metaPaths.length === parsedPaths.length &&
         metaPaths.every((value, index) => value === parsedPaths[index]),
       metaPaths.join(', '),
-    );
-
-    const missingDigests = meta.files.filter(
-      (file) =>
-        !/^[0-9a-f]{64}$/.test(file.preImageSha256 ?? '') ||
-        !/^[0-9a-f]{64}$/.test(file.postImageSha256 ?? ''),
-    );
-    push(
-      `${patchName}: records pre/post digests for every file`,
-      missingDigests.length === 0,
-      missingDigests.length === 0
-        ? 'ok'
-        : missingDigests.map((file) => file.path).join(', '),
     );
 
     if (recorded !== null) {
@@ -261,6 +291,13 @@ export function verifyOnline({ checkoutPath, config = loadConfig() } = {}) {
       run('git', ['init', '--quiet', repoDir]);
       run('git', ['-C', repoDir, 'config', 'user.email', 'verify@aurelia.invalid']);
       run('git', ['-C', repoDir, 'config', 'user.name', 'Aurelia Verify']);
+      // The recorded post-image digests are over LF bytes, and the pre-images
+      // are written with the exact bytes `git show` returned. Without this, a
+      // machine whose global config sets core.autocrlf=true (the Git for Windows
+      // default) would have `git apply` re-expand the patch to CRLF and report a
+      // post-image mismatch that is purely local. generate-patch.mjs pins the
+      // same setting on its throwaway repository.
+      run('git', ['-C', repoDir, 'config', 'core.autocrlf', 'false']);
       for (const entry of extracted.entries) {
         const source = path.join(preDir, entry.path);
         const target = path.join(repoDir, entry.path);

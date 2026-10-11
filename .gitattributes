@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# Aurelia line-ending policy - enforced by git, not by convention.
+#
+# Why this file exists
+# -------------------
+# Run https://github.com/ankworks/aurelia/actions/runs/38108794402 failed on the
+# windows-2025 runner at the "patch-verification" stage with:
+#
+#   unexpected content before first file header:
+#   "diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn\r"
+#
+# The checked-out copy of chromium/patches/0001-aurelia-webui-and-resources.patch
+# had CRLF line endings. Nothing in this repository told git otherwise, and the
+# Git for Windows install on GitHub-hosted Windows runners leaves the installer
+# default `core.autocrlf=true` in the SYSTEM gitconfig (the image passes
+# /o:PathOption=CmdTools but no /o:AutoCRLF=false), so `actions/checkout`
+# materialised every text file with CRLF.
+#
+# A digest-verified patch cannot survive that. The patch is hashed over its raw
+# bytes, and `lib/patch.mjs` matches `diff --git` headers with a `$`-anchored
+# regex that cannot match a line ending in CR (`\r` is an ECMAScript
+# LineTerminator, so `.` never consumes it and `$` only matches end of input).
+# .editorconfig already asked for `end_of_line = lf`, but EditorConfig is a
+# convention that git does not consult on checkout. These rules are the part
+# that actually binds.
+#
+# Chromium solves the same problem the same way: its own .gitattributes pins
+# `*.cc text eol=lf`, `*.gn text eol=lf`, `*.py text eol=lf`, and so on.
+#
+# Rules
+# -----
+# 1. Text files always land in the working tree with LF, on every platform,
+#    whatever core.autocrlf says.
+# 2. Digest-verified artifacts are never converted at all - not on checkout and
+#    not on `git add`. `-text` wins over the `*` rule below (git applies the
+#    last matching pattern), so the bytes on disk are always the bytes that were
+#    hashed. `tools/ci/check-line-endings.mjs` fails the build if this stops
+#    being true.
+# ---------------------------------------------------------------------------
+
+* text=auto eol=lf
+
+# Patch files are hashed (chromium/patches/*.meta.json -> sha256) and re-applied
+# byte-for-byte with `git apply`. Never let git touch their bytes.
+*.patch -text
+*.diff -text

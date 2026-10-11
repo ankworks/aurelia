@@ -136,6 +136,41 @@ A patch is accepted only if it:
    `node tools/chromium/cli.mjs generate-patch`, so it always targets the
    pinned revision exactly.
 
+### Patch files are byte-exact, so their line endings are a build input
+
+A patch file is hashed (`*.meta.json` → `sha256`) and re-applied byte-for-byte
+with `git apply`. It must therefore be stored exactly as `git diff` produced it:
+**LF line endings, no byte-order mark**. The repository enforces this with
+`.gitattributes`:
+
+```
+* text=auto eol=lf
+*.patch -text
+*.diff -text
+```
+
+This is not cosmetic. Run
+[38108794402](https://github.com/ankworks/aurelia/actions/runs/38108794402)
+failed on the `windows-2025` runner because Git for Windows defaults to
+`core.autocrlf=true` and nothing in this repository overrode it, so
+`actions/checkout` materialised the patch with CRLF. `\r` is an ECMAScript
+line terminator, so the `$`-anchored `diff --git` header regex in
+`tools/chromium/lib/patch.mjs` cannot match such a line, and the parser reported
+`unexpected content before first file header`.
+
+Checks that keep it that way:
+
+| Check                                                        | Where                                |
+| ------------------------------------------------------------ | ------------------------------------ |
+| Patch bytes are LF with no BOM, and the digest still matches | `verify-patches` (offline, every PR) |
+| `.gitattributes` still pins `*.patch` to no conversion       | `tools/ci/check-line-endings.mjs`    |
+| A `core.autocrlf=true` checkout still yields LF patch bytes  | `tests/tools/line-endings.test.mjs`  |
+
+Chromium protects its own tree the same way (`*.gn text eol=lf`,
+`*.cc text eol=lf`, … in its `.gitattributes`); `tools/gritsettings/resource_ids.spec`
+is one of the few patched paths Chromium does not list, which is why the patch
+must be LF rather than relying on the target tree's settings.
+
 ## Update procedure
 
 Never merge a Chromium update directly into `main`.
