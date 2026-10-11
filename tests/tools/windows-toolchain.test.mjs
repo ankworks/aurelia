@@ -21,11 +21,16 @@ import {
   detectWindowsSdk,
   detectWindowsToolchain,
   findVswhereExecutable,
+  GN_ONLY_REQUIRES_REQUIRED_SDK,
   isSdkVersionCompatible,
+  MINIMUM_DEBUGGERS_VERSION,
   parseVersion,
+  PREFERRED_SDK_SUBVERSION,
+  REQUIRED_NTDDI_MACRO,
   REQUIRED_SDK_VERSION,
   REQUIRED_VS_COMPONENT,
   SUPPORTED_VS_VERSIONS,
+  verifyWindowsSdkInstallation,
 } from '../../tools/chromium/lib/windows-toolchain.mjs';
 import { checkBuilder } from '../../tools/ci/check-builder.mjs';
 import { toolingDiagnostics } from '../../tools/chromium/sync.mjs';
@@ -481,5 +486,90 @@ describe('integration with checkBuilder and sync diagnostics', () => {
     );
     const workflow = readFileSync(workflowPath, 'utf8');
     expect(workflow).toContain("DEPOT_TOOLS_WIN_TOOLCHAIN: '0'");
+  });
+
+  it('distinguishes preferred packaged SDK release from minimum supported SDK directory version and enforces it for gn-only mode', () => {
+    expect(REQUIRED_SDK_VERSION).toBe('10.0.28000.0');
+    expect(PREFERRED_SDK_SUBVERSION).toBe('10.0.28000.2270');
+    expect(MINIMUM_DEBUGGERS_VERSION).toBe('10.0.26100.3323');
+    expect(REQUIRED_NTDDI_MACRO).toBe('NTDDI_WIN11_BR');
+    expect(GN_ONLY_REQUIRES_REQUIRED_SDK).toBe(true);
+
+    // Even in gn-only mode, SDK 10.0.26100.0 is blocked because setup_toolchain.py
+    // hardcodes SDK_VERSION = '10.0.28000.0' during gn gen.
+    const sdkFiles = mockSdkFiles('10.0.26100.0');
+    const { exists } = createMockFs({ sdkFiles });
+    const config = loadConfig();
+    const result = checkBuilder({
+      config,
+      mode: 'gn',
+      env: {
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+        ProgramFiles: 'C:\\Program Files',
+        DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
+      },
+      platform: 'win32',
+      spawn: (file, args) =>
+        file.includes('vswhere')
+          ? mockVswhereSpawn(file, args)
+          : {
+              error: undefined,
+              status: 0,
+              stdout: 'v22.0.0\n',
+              stderr: '',
+            },
+      exists,
+      readdirSync: (dir) =>
+        dir.replaceAll('/', '\\').endsWith('Windows Kits\\10\\Include')
+          ? ['10.0.26100.0']
+          : ['14.42.34433'],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.problems.join('; ')).toContain(
+      'Installed Windows SDK version 10.0.26100.0 is older than required 10.0.28000.0',
+    );
+  });
+
+  it('deeply verifies Windows SDK 10.0.28000.0 headers, NTDDI_WIN11_BR macro, x64/x86 libs, and dbghelp.dll', () => {
+    const completeSet = new Set([
+      ...mockSdkFiles('10.0.28000.0'),
+      `${MOCK_SDK_PATH}\\Include\\10.0.28000.0\\shared\\sdkddkver.h`,
+      `${MOCK_SDK_PATH}\\Lib\\10.0.28000.0\\um\\x86\\kernel32.lib`,
+      `${MOCK_SDK_PATH}\\Lib\\10.0.28000.0\\ucrt\\x86\\ucrt.lib`,
+    ]);
+    const verification = verifyWindowsSdkInstallation({
+      sdkDir: MOCK_SDK_PATH,
+      version: '10.0.28000.0',
+      platform: 'win32',
+      exists: (candidate) => completeSet.has(candidate.replaceAll('/', '\\')),
+      readText: () => '#define NTDDI_WIN11_BR 0x0A000011\n',
+    });
+    expect(verification.ok).toBe(true);
+    expect(verification.checks).toEqual({
+      versionCompatible: true,
+      windowsH: true,
+      corecrtH: true,
+      sdkddkverH: true,
+      ntddiWin11BrMacro: true,
+      x64Libs: true,
+      x86Libs: true,
+      debuggersDll: true,
+    });
+
+    // Missing NTDDI_WIN11_BR or x86 libs fails verification
+    const missingMacro = verifyWindowsSdkInstallation({
+      sdkDir: MOCK_SDK_PATH,
+      version: '10.0.28000.0',
+      platform: 'win32',
+      exists: (candidate) =>
+        !candidate.includes('\\x86\\') &&
+        completeSet.has(candidate.replaceAll('/', '\\')),
+      readText: () => '#define NTDDI_WIN11_GE 0x0A000010\n',
+    });
+    expect(missingMacro.ok).toBe(false);
+    expect(missingMacro.checks.ntddiWin11BrMacro).toBe(false);
+    expect(missingMacro.checks.x86Libs).toBe(false);
+    expect(missingMacro.problems.join('; ')).toContain('NTDDI_WIN11_BR');
+    expect(missingMacro.problems.join('; ')).toContain('missing x86 libraries');
   });
 });

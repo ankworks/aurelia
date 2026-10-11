@@ -108,7 +108,13 @@ export function checkDocsLinks({ root = REPO_ROOT } = {}) {
         external += 1;
         continue;
       }
-      const [targetPath, anchor] = target.split('#');
+      const [rawTargetPath, anchor] = target.split('#');
+      let targetPath = rawTargetPath;
+      try {
+        targetPath = decodeURIComponent(rawTargetPath);
+      } catch {
+        targetPath = rawTargetPath;
+      }
       // A pure-anchor link points into the file it appears in.
       const base =
         targetPath === ''

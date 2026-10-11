@@ -19,7 +19,7 @@
 
 ## 📢 Overview
 
-Following [Development Update #01](Development-Update-01), the Aurelia team continued improving its Chromium build validation infrastructure.
+Following [Development Update #01](./UPDATE%2001.md), the Aurelia team continued improving its Chromium build validation infrastructure.
 
 Our previous GitHub Actions attempt progressed through a substantial Chromium source synchronization process but failed during Windows toolchain initialization.
 
@@ -65,7 +65,7 @@ The Aurelia validation pipeline now configures:
 
 ```yaml
 env:
-  DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+  DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
 ```
 
 The setting is propagated through the Chromium validation driver and synchronization tooling.
@@ -98,17 +98,17 @@ This provides more useful diagnostic information than previous attempts.
 
 ### Latest Runner Configuration
 
-| Component | Detected Value |
-|:--|:--|
-| Platform | Windows |
-| CPU | 4 logical cores |
-| RAM | 16 GB |
-| Free disk space | 147 GB |
-| Visual Studio | 18.10.12217.157 |
-| MSVC toolset | 14.51.36231 |
-| Windows SDK | 10.0.26100.0 |
-| Toolchain mode | Local Visual Studio |
-| Validation level | GN-only |
+| Component        | Detected Value      |
+| :--------------- | :------------------ |
+| Platform         | Windows             |
+| CPU              | 4 logical cores     |
+| RAM              | 16 GB               |
+| Free disk space  | 147 GB              |
+| Visual Studio    | 18.10.12217.157     |
+| MSVC toolset     | 14.51.36231         |
+| Windows SDK      | 10.0.26100.0        |
+| Toolchain mode   | Local Visual Studio |
+| Validation level | GN-only             |
 
 The runner successfully provided Git, Python, Visual Studio, and an MSVC compiler.
 
@@ -218,20 +218,20 @@ The exact cause has not yet been confirmed.
 
 The Windows toolchain recovery changes passed the repository's automated verification.
 
-| Check | Result |
-|:--|:--|
-| Dependency installation | ✅ PASS |
-| Formatting | ✅ PASS |
-| ESLint | ✅ PASS |
-| TypeScript | ✅ PASS |
-| Unit tests | ✅ 380 passed |
-| Fast checks | ✅ 15/15 |
-| GitHub Actions fast CI | ✅ PASS |
-| Windows preflight | ⚠️ BLOCKED |
+| Check                    | Result        |
+| :----------------------- | :------------ |
+| Dependency installation  | ✅ PASS       |
+| Formatting               | ✅ PASS       |
+| ESLint                   | ✅ PASS       |
+| TypeScript               | ✅ PASS       |
+| Unit tests               | ✅ 380 passed |
+| Fast checks              | ✅ 15/15      |
+| GitHub Actions fast CI   | ✅ PASS       |
+| Windows preflight        | ⚠️ BLOCKED    |
 | Chromium synchronization | ⏳ NOT TESTED |
-| GN generation | ⏳ NOT TESTED |
-| C++ compilation | ⏳ NOT TESTED |
-| Browser runtime | ⏳ NOT TESTED |
+| GN generation            | ⏳ NOT TESTED |
+| C++ compilation          | ⏳ NOT TESTED |
+| Browser runtime          | ⏳ NOT TESTED |
 
 The tests validate the pipeline implementation and environment detection logic.
 
@@ -241,16 +241,16 @@ They do not establish that Chromium can compile successfully.
 
 ## 📊 6. Comparing Update #01 and Update #02
 
-| Area | Update #01 | Update #02 |
-|:--|:--|:--|
-| Windows Git compatibility | Fixed | Preserved |
-| Chromium source synchronization | Reached dependency hooks | Not attempted |
-| Windows toolchain configuration | GCS download failed | Local toolchain selected |
-| Visual Studio detection | Basic | Detailed |
-| Windows SDK detection | Not validated early | Early compatibility check |
-| Disk validation | Passed | Blocked |
-| GN generation | Not reached | Not reached |
-| Failure detection time | Approximately 1h 40m | During preflight |
+| Area                            | Update #01               | Update #02                |
+| :------------------------------ | :----------------------- | :------------------------ |
+| Windows Git compatibility       | Fixed                    | Preserved                 |
+| Chromium source synchronization | Reached dependency hooks | Not attempted             |
+| Windows toolchain configuration | GCS download failed      | Local toolchain selected  |
+| Visual Studio detection         | Basic                    | Detailed                  |
+| Windows SDK detection           | Not validated early      | Early compatibility check |
+| Disk validation                 | Passed                   | Blocked                   |
+| GN generation                   | Not reached              | Not reached               |
+| Failure detection time          | Approximately 1h 40m     | During preflight          |
 
 **The major improvement is faster and more informative failure detection.**
 
@@ -307,7 +307,7 @@ Our next priorities are focused on build environment compatibility.
 
 ### Previous Update
 
-[Development Update #01 — Chromium Synchronization Attempt](Development-Update-01)
+[Development Update #01 — Chromium Synchronization Attempt](./UPDATE%2001.md)
 
 ### Project Links
 
