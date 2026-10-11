@@ -109,7 +109,7 @@ export function ninjaBuildArgs({ outDirRelative, jobs, targets }) {
   return ['-C', outDirRelative, '-j', String(jobs), ...targets];
 }
 
-/** `autoninja -t query` arguments: verify one target exists in the graph. */
+/** `ninja -t query` arguments: verify one target exists in the generated graph. */
 export function ninjaQueryArgs({ outDirRelative, target }) {
   if (typeof target !== 'string' || target.length === 0) {
     throw new Error('ninja query needs a concrete target');

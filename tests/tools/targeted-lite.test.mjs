@@ -222,6 +222,9 @@ describe('targeted-lite build command construction', () => {
     expect(
       execution.indexOf("if (mode === 'targeted' || mode === 'full')"),
     ).toBeGreaterThan(execution.indexOf('runTargetedLiteCppStage'));
+    // Object-target existence is queried with plain ninja tool mode (works for
+    // both ninja and Siso backends); the compile itself uses autoninja.
+    expect(DRIVER).toMatch(/logCapture\(\s*'ninja',/);
   });
 });
 

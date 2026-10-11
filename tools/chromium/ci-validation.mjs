@@ -945,8 +945,11 @@ async function runTargetedLiteCppStage(context, { srcDir, outDir, env, deadlineA
   const queryLog = path.join(context.logsDir, 'targeted-cpp-object-queries.log');
   try {
     for (const unit of units) {
+      // Plain `ninja` tool mode reads the same generated build.ninja and always
+      // implements `-t query`; autoninja may dispatch to Siso, whose tool-mode
+      // surface is not guaranteed. The compile itself uses autoninja.
       logCapture(
-        'autoninja',
+        'ninja',
         ninjaQueryArgs({ outDirRelative, target: unit.object }),
         srcDir,
         env,
