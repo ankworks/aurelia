@@ -131,7 +131,9 @@ describe('hosted Chromium validation configuration', () => {
   it('has only manual dispatch, selectable levels, and a GN default', () => {
     expect(WORKFLOW).toContain('workflow_dispatch:');
     expect(WORKFLOW).toMatch(/validation_level:\s*\n[\s\S]*?type:\s*choice/);
-    expect(WORKFLOW).toMatch(/options:\s*\n\s+- gn\n\s+- targeted\n\s+- full/);
+    expect(WORKFLOW).toMatch(
+      /options:\s*\n\s+- gn\n\s+- targeted-lite\n\s+- targeted\n\s+- full/,
+    );
     expect(WORKFLOW).toMatch(/default:\s*gn/);
     expect(WORKFLOW).not.toMatch(/^\s+(push|pull_request|schedule):/m);
     expect(WORKFLOW).toContain('timeout-minutes: 360');
@@ -459,12 +461,15 @@ describe('GN-only validation on the standard runner', () => {
   });
 
   it('skips every compilation stage in gn mode at the source level', () => {
-    const gnSkip = DRIVER.indexOf("if (mode !== 'gn') {");
-    const webui = DRIVER.indexOf("id: 'webui-resources'");
+    const start = DRIVER.indexOf('const gnArgsFile');
+    const end = DRIVER.indexOf("writeSummary(context, 'PASS')", start);
+    const execution = DRIVER.slice(start, end);
+    const gnSkip = execution.indexOf("if (mode !== 'gn') {");
+    const webui = execution.indexOf("id: 'webui-resources'");
     expect(gnSkip).toBeGreaterThan(-1);
     expect(webui).toBeGreaterThan(gnSkip);
-    expect(DRIVER.indexOf("id: 'targeted-cpp'")).toBeGreaterThan(gnSkip);
-    expect(DRIVER.indexOf("id: 'full-chrome'")).toBeGreaterThan(gnSkip);
+    expect(execution.indexOf("id: 'targeted-cpp'")).toBeGreaterThan(gnSkip);
+    expect(execution.indexOf("id: 'full-chrome'")).toBeGreaterThan(gnSkip);
     expect(COMPILE_STAGE_IDS).toEqual(
       expect.arrayContaining([
         'webui-resources',

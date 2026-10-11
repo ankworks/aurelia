@@ -36,6 +36,15 @@ import {
 } from '../ci/check-builder.mjs';
 import { isGithubHostedRunner } from '../ci/runner-environment.mjs';
 import { isMainModule } from '../lib/entry.mjs';
+import {
+  classifyBuildFailure,
+  formatDuration,
+  ninjaBuildArgs,
+  ninjaQueryArgs,
+  plannedObjectTargets,
+  summarizeUsage,
+  TARGETED_LITE_CPP_UNITS,
+} from './build-plan.mjs';
 import { captureCommand, resolveSpawn, withPathPrefix } from './lib/exec.mjs';
 import { describeGitEnvironment } from './lib/windows-git.mjs';
 import { scopedGnCheckCommands, verifyGnTargets } from './gn-targets.mjs';
@@ -90,6 +99,17 @@ export const MAX_BROWSER_ARTIFACT_BYTES = 450 * 1024 ** 2;
  */
 export function diskReserveForMode(mode) {
   return mode === 'gn' ? MINIMUM_DISK_RESERVE_GB_GN : MINIMUM_DISK_RESERVE_GB;
+}
+
+/**
+ * Reviewed GN argument file for a validation mode. targeted-lite uses its own
+ * reduced-scope configuration (symbol_level = 0); every other mode uses the
+ * reviewed development configuration.
+ */
+export function gnArgsConfigForMode(mode) {
+  return mode === 'targeted-lite'
+    ? 'config/gn/win-x64-targeted-lite.gn'
+    : 'config/gn/win-x64-dev.gn';
 }
 
 /**
@@ -431,7 +451,21 @@ function makeSummary({
   const actualFree = capabilities?.destinationFreeDiskGb;
   const stageRows = STAGES.map(([id, label]) => {
     const result = stages[id] ?? { status: 'NOT TESTED', details: 'Not reached.' };
-    return `| ${markdownCell(label)} | **${markdownCell(result.status)}** | ${markdownCell(result.details)} |`;
+    return `| ${markdownCell(label)} | **${markdownCell(result.status)}** | ${markdownCell(
+      result.durationMs === undefined ? '-' : formatDuration(result.durationMs),
+    )} | ${markdownCell(result.details)} |`;
+  });
+  const usageRows = STAGES.filter(
+    ([id]) => stages[id]?.usage !== undefined && stages[id]?.usage !== null,
+  ).map(([id, label]) => {
+    const usage = stages[id].usage;
+    return `| ${markdownCell(label)} | ${markdownCell(
+      usage.peakUsedMemoryGb === null ? 'unknown' : `${usage.peakUsedMemoryGb} GB`,
+    )} | ${markdownCell(
+      usage.minimumAvailableMemoryGb === null ? 'unknown' : `${usage.minimumAvailableMemoryGb} GB`,
+    )} | ${markdownCell(
+      usage.minimumFreeDiskGb === null ? 'unknown' : `${usage.minimumFreeDiskGb} GB`,
+    )} |`;
   });
   const lines = [
     '# Chromium build validation summary',
@@ -439,7 +473,14 @@ function makeSummary({
     `- Overall status: **${overall}**`,
     `- Validation level: \`${mode}\``,
     `- Requested GitHub-hosted runner: \`${runnerSize}\``,
-    `- Resource profile: \`${mode === 'gn' ? 'gn (GN-only, reduced)' : `${mode} (strict reference builder)`}\``,
+    `- Resource profile: \`${
+      mode === 'gn'
+        ? 'gn (GN-only, reduced)'
+        : mode === 'targeted-lite'
+          ? 'targeted-lite (experimental reduced profile)'
+          : `${mode} (strict reference builder)`
+    }\``,
+    `- Validation scope: ${validationScopeForMode(mode)}`,
     `- Aurelia revision: \`${aureliaRevision ?? 'unknown'}\``,
     `- Chromium version: \`${config?.chromium?.version ?? 'unknown'}\``,
     `- Chromium pinned revision: \`${config?.chromium?.revision ?? 'unknown'}\``,
@@ -511,10 +552,20 @@ function makeSummary({
     '',
     '## Stage results',
     '',
-    '| Stage | Status | Evidence / reason |',
-    '| --- | --- | --- |',
+    '| Stage | Status | Duration | Evidence / reason |',
+    '| --- | --- | ---: | --- |',
     ...stageRows,
     '',
+    ...(usageRows.length > 0
+      ? [
+          '## Measured resource peaks (sampled during each stage)',
+          '',
+          '| Stage | Peak used memory | Minimum available memory | Minimum free disk |',
+          '| --- | ---: | ---: | ---: |',
+          ...usageRows,
+          '',
+        ]
+      : []),
     `- Browser binary artifact: ${artifact?.status ?? 'NOT TESTED'}${artifact?.details ? ` — ${artifact.details}` : ''}`,
   ];
   if (failure) {
@@ -533,6 +584,7 @@ function writeSummary(context, overall, failure = null) {
       {
         overall,
         mode: context.mode,
+        scope: validationScopeForMode(context.mode),
         runnerSize: context.runnerSize,
         aureliaRevision: context.aureliaRevision,
         chromiumVersion: context.config?.chromium?.version ?? null,
@@ -723,9 +775,29 @@ function logCapture(file, args, cwd, env, logPath) {
   }
 }
 
-function setStage(context, id, status, details) {
-  context.stages[id] = { status, details };
+function setStage(context, id, status, details, extra = {}) {
+  context.stages[id] = { status, details, ...extra };
   writeSummary(context, 'IN PROGRESS');
+}
+
+/** Resource samples recorded by the run monitor for one stage. */
+function readStageUsage(usagePath, stage) {
+  try {
+    const samples = readFileSync(usagePath, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter((sample) => sample !== null && sample.stage === stage);
+    return summarizeUsage(samples);
+  } catch {
+    return null;
+  }
 }
 
 async function runCommandStage(context, {
@@ -746,6 +818,15 @@ async function runCommandStage(context, {
   // Use the mode-specific free-disk reserve unless the caller overrides it.
   const effectiveMinFreeDiskGb =
     minimumFreeDiskGb !== null ? minimumFreeDiskGb : diskReserveForMode(context.mode);
+  const startedAt = Date.now();
+  const finishRecord = () => {
+    const durationMs = Date.now() - startedAt;
+    return {
+      durationMs,
+      usage: readStageUsage(context.usagePath, id),
+      durationText: ` (took ${formatDuration(durationMs)})`,
+    };
+  };
   try {
     const result = await runMonitoredCommand({
       file,
@@ -763,16 +844,36 @@ async function runCommandStage(context, {
       quiet: context.quiet,
     });
     const evidence = verify ? await verify(result) : null;
+    const record = finishRecord();
     setStage(
       context,
       id,
       'PASS',
-      evidence ?? `Compiler/tool process exited with code ${result.exitCode}.`,
+      `${evidence ?? `Compiler/tool process exited with code ${result.exitCode}.`}${record.durationText}`,
+      { durationMs: record.durationMs, usage: record.usage },
     );
     return result;
   } catch (error) {
     const status = error.status === 'RESOURCE EXHAUSTED' ? 'RESOURCE EXHAUSTED' : 'FAIL';
-    setStage(context, id, status, error.message);
+    const record = finishRecord();
+    // Distinguish resource exhaustion and source/compiler errors: the monitor
+    // status covers runtime limits; a compiler that exited non-zero is
+    // classified from its own diagnostics, without suppressing them.
+    let details = error.message;
+    if (status === 'FAIL' && file === 'autoninja') {
+      let output = '';
+      try {
+        output = readFileSync(logPath, 'utf8').slice(-200_000);
+      } catch {
+        output = '';
+      }
+      const errorClass = classifyBuildFailure(output);
+      details += ` [error class: ${errorClass}]`;
+    }
+    setStage(context, id, status, `${details}${record.durationText}`, {
+      durationMs: record.durationMs,
+      usage: record.usage,
+    });
     throw error;
   }
 }
@@ -815,6 +916,78 @@ function assertGeneratedResources(outDir) {
     );
   }
   return WEBUI_RESOURCE_OUTPUTS;
+}
+
+/**
+ * Experimental targeted-lite C++ stage: compile the Aurelia controller
+ * translation units as exact Ninja object targets.
+ *
+ * The object targets come from the GN source_set labels through GN's stable
+ * obj/<label-dir>/<label-name>/<source>.obj convention and are verified
+ * against the generated Ninja graph before compiling. This deliberately does
+ * NOT build the source_sets' transitive dependency libraries or link anything:
+ * on the standard 4-core runner that graph (chrome/browser:browser_public_dependencies
+ * and friends) is thousands of translation units and belongs to the strict
+ * `targeted` level on the larger builder. A PASS here means exactly what the
+ * stage detail says: Aurelia's C++ controllers compile against Chromium 155
+ * with the real MSVC toolchain and Windows SDK.
+ */
+async function runTargetedLiteCppStage(context, { srcDir, outDir, env, deadlineAt }) {
+  const units = plannedObjectTargets(TARGETED_LITE_CPP_UNITS);
+  const outDirRelative = path.relative(srcDir, outDir);
+  const objects = units.map((unit) => unit.object);
+  setStage(
+    context,
+    'targeted-cpp',
+    'RUNNING',
+    'Verifying the exact Ninja object targets for the Aurelia controller translation units.',
+  );
+  const queryLog = path.join(context.logsDir, 'targeted-cpp-object-queries.log');
+  try {
+    for (const unit of units) {
+      logCapture(
+        'autoninja',
+        ninjaQueryArgs({ outDirRelative, target: unit.object }),
+        srcDir,
+        env,
+        queryLog,
+      );
+    }
+  } catch (error) {
+    const message = `${error.message} [error class: target-resolution]`;
+    setStage(context, 'targeted-cpp', 'FAIL', message);
+    throw new ValidationError(message, 'FAIL');
+  }
+  await runCommandStage(context, {
+    id: 'targeted-cpp',
+    label:
+      'Compile the Aurelia WebUI controller translation units with the Windows MSVC toolchain (targeted-lite object-level scope)',
+    file: 'autoninja',
+    args: ninjaBuildArgs({
+      outDirRelative,
+      jobs: compileJobsForMode('targeted-lite'),
+      targets: objects,
+    }),
+    cwd: srcDir,
+    env,
+    deadlineAt,
+    verify: () => {
+      const missing = units.filter(
+        (unit) => !existsSync(path.join(outDir, ...unit.object.split('/'))),
+      );
+      if (missing.length > 0) {
+        throw new ValidationError(
+          `compilation exited successfully but object outputs are missing:\n- ${missing.map((unit) => unit.object).join('\n- ')}`,
+          'FAIL',
+        );
+      }
+      return (
+        `Compiled ${units.length} Aurelia controller translation unit(s) via MSVC: ` +
+        `${objects.join(', ')} (GN source_set labels ${units.map((unit) => unit.gnLabel).join(', ')}). ` +
+        'Scope: object-level compile only; source_set dependency compilation, linking and the chrome target are NOT TESTED in targeted-lite.'
+      );
+    },
+  });
 }
 
 async function buildBrowserArtifact(context, outDir, env, deadlineAt) {
@@ -992,6 +1165,20 @@ export async function runValidation({
       context.stages[id] = {
         status: 'NOT TESTED',
         details: 'Skipped in gn mode: GN validation never compiles.',
+      };
+    }
+  }
+  if (mode === 'targeted-lite') {
+    for (const id of [
+      'full-chrome',
+      'browser-staging',
+      'browser-packaging',
+      'browser-artifact',
+    ]) {
+      context.stages[id] = {
+        status: 'NOT TESTED',
+        details:
+          'Out of scope for targeted-lite: this experimental level never builds the full chrome target or a browser artifact (those stay behind the strict targeted/full gate on the larger builder).',
       };
     }
   }
@@ -1277,7 +1464,7 @@ export async function runValidation({
       deadlineAt,
     });
 
-    const gnArgsFile = path.join(REPO_ROOT, 'config/gn/win-x64-dev.gn');
+    const gnArgsFile = path.join(REPO_ROOT, gnArgsConfigForMode(mode));
     await runCommandStage(context, {
       id: 'gn-argument-policy',
       label: 'Validate the reviewed Windows x64 GN arguments',
@@ -1430,13 +1617,11 @@ export async function runValidation({
       id: 'webui-resources',
       label: 'Build WebUI TypeScript, GRIT resource descriptions, headers, maps, and pak files',
       file: 'autoninja',
-      args: [
-        '-C',
-        path.relative(srcDir, outDir),
-        '-j',
-        String(MAX_BUILD_JOBS),
-        ...WEBUI_RESOURCE_TARGETS,
-      ],
+      args: ninjaBuildArgs({
+        outDirRelative: path.relative(srcDir, outDir),
+        jobs: compileJobsForMode(mode),
+        targets: WEBUI_RESOURCE_TARGETS,
+      }),
       cwd: srcDir,
       env: childEnv,
       deadlineAt,
@@ -1447,18 +1632,25 @@ export async function runValidation({
     });
     }
 
+    if (mode === 'targeted-lite') {
+      await runTargetedLiteCppStage(context, {
+        srcDir,
+        outDir,
+        env: childEnv,
+        deadlineAt,
+      });
+    }
+
     if (mode === 'targeted' || mode === 'full') {
       await runCommandStage(context, {
         id: 'targeted-cpp',
         label: 'Compile Aurelia WebUI controllers and their C++ dependencies',
         file: 'autoninja',
-        args: [
-          '-C',
-          path.relative(srcDir, outDir),
-          '-j',
-          String(MAX_BUILD_JOBS),
-          ...TARGETED_CPP_TARGETS,
-        ],
+        args: ninjaBuildArgs({
+          outDirRelative: path.relative(srcDir, outDir),
+          jobs: compileJobsForMode(mode),
+          targets: TARGETED_CPP_TARGETS,
+        }),
         cwd: srcDir,
         env: childEnv,
         deadlineAt,
@@ -1470,13 +1662,11 @@ export async function runValidation({
         id: 'full-chrome',
         label: 'Compile the full Chromium browser target after targeted validation passes',
         file: 'autoninja',
-        args: [
-          '-C',
-          path.relative(srcDir, outDir),
-          '-j',
-          String(MAX_BUILD_JOBS),
-          'chrome',
-        ],
+        args: ninjaBuildArgs({
+          outDirRelative: path.relative(srcDir, outDir),
+          jobs: compileJobsForMode(mode),
+          targets: ['chrome'],
+        }),
         cwd: srcDir,
         env: childEnv,
         deadlineAt,

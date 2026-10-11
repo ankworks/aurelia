@@ -5,6 +5,10 @@ name: Chromium build validation
 #   gn                -> reduced GN-only profile (4 cores, 15.5 GB RAM, 80 GB disk,
 #                        gclient --no-history shallow checkout).
 #                        Runs GN generation and gn check; never compiles.
+#   targeted-lite     -> experimental resource-aware profile (4 cores, 15.5 GB RAM,
+#                        80 GB disk, Ninja -j 2). Compiles the WebUI TypeScript/
+#                        GRIT/pak resources and the Aurelia C++ controller
+#                        translation units only; never links, never builds chrome.
 #   targeted / full   -> strict reference builder (8 cores, 32 GB RAM, 150 GB disk).
 #                        A standard runner is BLOCKED before sync for these levels.
 # Use the larger option only when the organization has a GitHub-hosted Windows
@@ -15,16 +19,17 @@ on:
   workflow_dispatch:
     inputs:
       validation_level:
-        description: Validation depth. gn runs GN-only validation (no compilation) and is the only level that can run on the standard runner. targeted and full run only after the prior stages pass in this run and require the strict 8-core / 32 GB builder.
+        description: Validation depth. gn runs GN-only validation (no compilation). targeted-lite is the experimental resource-aware level which, on the standard runner, compiles the WebUI TypeScript/GRIT/pak resources and the Aurelia C++ controller translation units with limited parallelism; its summary states that limited scope explicitly. targeted and full run only after the prior stages pass in this run and require the strict 8-core / 32 GB builder.
         required: true
         type: choice
         options:
           - gn
+          - targeted-lite
           - targeted
           - full
         default: gn
       runner_size:
-        description: Standard runner runs gn validation within its reduced profile and reports BLOCKED for targeted and full. larger requires the named GitHub-hosted runner to be configured.
+        description: Standard runner runs gn and targeted-lite within their reduced profiles and reports BLOCKED for targeted and full. larger requires the named GitHub-hosted runner to be configured.
         required: true
         type: choice
         options:

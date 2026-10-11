@@ -237,6 +237,7 @@ describe('command line', () => {
     expect(results.map((entry) => path.basename(entry.file)).sort()).toEqual([
       'win-x64-dev.gn',
       'win-x64-low-resource.gn',
+      'win-x64-targeted-lite.gn',
     ]);
   });
 });
