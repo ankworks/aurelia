@@ -86,8 +86,31 @@ export function plannedObjectTargets(units = TARGETED_LITE_CPP_UNITS) {
 }
 
 /**
+ * Convert one GN target label into the Ninja target name GN generates for it.
+ *
+ * Exact pinned behavior (GN cfcd774b, src/gn/ninja_build_writer.cc,
+ * `gn help ninja_rules`): "Full label name with no leading slashes. So you can
+ * use `ninja tools/fruit:doom_melon` to build `//tools/fruit:doom_melon`."
+ * and "For consistency with the rest of the program, GN introspection commands
+ * accept explicit labels." So `//a/b:c` is the canonical form for `gn desc` /
+ * `gn check`, while the build executor must be given `a/b:c`. Plain Ninja
+ * paths (obj/... translation units, `chrome`) pass through unchanged.
+ *
+ * This is the single conversion point at the build execution boundary; GN
+ * validation keeps the canonical `//` form everywhere.
+ */
+export function ninjaTargetFor(target) {
+  const text = String(target ?? '');
+  if (text.startsWith('//')) {
+    return text.slice(2);
+  }
+  return text;
+}
+
+/**
  * Exact `autoninja` arguments for a bounded compile: job cap first, then the
- * exact targets. The out directory must already be the GN-relative path.
+ * exact Ninja targets (GN labels converted with `ninjaTargetFor`). The out
+ * directory must already be the GN-relative path.
  */
 export function ninjaBuildArgs({ outDirRelative, jobs, targets }) {
   if (
@@ -106,7 +129,13 @@ export function ninjaBuildArgs({ outDirRelative, jobs, targets }) {
   ) {
     throw new Error('ninja build plan needs at least one concrete target');
   }
-  return ['-C', outDirRelative, '-j', String(jobs), ...targets];
+  return [
+    '-C',
+    outDirRelative,
+    '-j',
+    String(jobs),
+    ...targets.map((target) => ninjaTargetFor(target)),
+  ];
 }
 
 /** `ninja -t query` arguments: verify one target exists in the generated graph. */
@@ -114,7 +143,7 @@ export function ninjaQueryArgs({ outDirRelative, target }) {
   if (typeof target !== 'string' || target.length === 0) {
     throw new Error('ninja query needs a concrete target');
   }
-  return ['-C', outDirRelative, '-t', 'query', target];
+  return ['-C', outDirRelative, '-t', 'query', ninjaTargetFor(target)];
 }
 
 /**

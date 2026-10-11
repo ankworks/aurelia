@@ -150,11 +150,33 @@ compiler diagnostics themselves are never suppressed.
   measurements above, not yet by repeated compile runs. The first real runs
   update the measurement table below.
 
+### GN labels versus Ninja target names (learned from run `38139216273`)
+
+The first targeted-lite run proved a boundary bug in the build command
+construction: the driver passed canonical GN labels (`//chrome/browser/
+resources/aurelia:build_ts`) to `autoninja`, and Siso/Ninja rejected every one
+of them as an unknown target. This is exact pinned-tool behavior, not a quirk:
+GN `cfcd774b`'s `gn help ninja_rules` states _"Full label name with no leading
+slashes. So you can use `ninja tools/fruit:doom_melon` to build
+`//tools/fruit:doom_melon`"_ and _"GN introspection commands accept explicit
+labels"_. So `gn desc` / `gn check` take the canonical `//` form while the
+build executor requires the same label without `//`. The conversion now lives
+in one place at the build execution boundary
+(`tools/chromium/build-plan.mjs` `ninjaTargetFor`, applied by `ninjaBuildArgs`
+and `ninjaQueryArgs`); GN validation keeps the canonical form, and regression
+tests pin the exact executor argv. Unknown-target errors are still hard
+failures, classified as `target-resolution` — the fix converts names, it never
+suppresses errors. The Chromium pin and patch set were not changed.
+
 ### Measured build results
 
-| Run                               | Date (UTC) | Scope | Result | Evidence |
-| --------------------------------- | ---------- | ----- | ------ | -------- |
-| _pending first targeted-lite run_ |            |       |        |          |
+| Run                                                                           | Date (UTC) | Scope                                                                            | Result                                                                                                                                                                                                                                                                                                                                                                                                                            | Evidence                                                        |
+| ----------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [`38139216273`](https://github.com/ankworks/aurelia/actions/runs/38139216273) | 2026-10-11 | targeted-lite full pipeline on `windows-2025` (4 vCPU / 16 GB), commit `cd1ecab` | **FAIL** at WebUI resource compilation — every `autoninja` resource target was rejected as an unknown target because the driver passed GN-style `//` labels to the Ninja-name boundary. Preflight, pinned sync, patch/overlay, GN argument policy, `gn gen`, effective-arguments, target-label and scoped `gn check` stages completed before the failure (job 12:25:43Z–12:48:52Z, 23m09s total). No compilation PASS is claimed. | Run URL; stage logs and `build-summary.md` in the run artifacts |
+
+The label-conversion fix is committed on the M1.9 branch; a rerun is required
+before any compilation status can move past FAIL. Until a build command exits
+with code 0 on Windows, `targeted-lite` compilation remains **NOT TESTED**.
 
 ## Runner storage topology (measured in run `38103342538`)
 

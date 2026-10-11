@@ -167,7 +167,17 @@ error, or source/compiler error) without suppressing the diagnostics.
 
 The selected GN labels come from the checked-in Aurelia overlay and the
 `build_webui()` template at the configured Chromium pin. A missing label or
-resource output is a failure, not a warning. Ninja invocations are capped at
+resource output is a failure, not a warning. GN introspection (`gn desc`,
+`gn check`) uses the canonical `//` label form; the build executor does not:
+at the pinned GN revision, `build.ninja` phony aliases are the _"full label
+name with no leading slashes"_ (`gn help ninja_rules`), so every build command
+converts labels at the single execution boundary in
+`tools/chromium/build-plan.mjs` (`ninjaTargetFor`). The first `targeted-lite`
+run ([38139216273](https://github.com/ankworks/aurelia/actions/runs/38139216273))
+failed exactly there — `//`-prefixed labels were rejected as unknown Ninja
+targets — and regression tests now pin the exact executor argv. Unknown-target
+errors remain hard failures classified as `target-resolution`; they are never
+suppressed. Ninja invocations are capped at
 four jobs on `targeted`/`full` and two jobs on `targeted-lite`. Resource usage
 is sampled every 30 seconds; the process tree is stopped if free disk falls
 below the mode's reserve or available RAM falls below 1.5 GB. A 330-minute

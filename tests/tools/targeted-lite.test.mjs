@@ -4,10 +4,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
+  scopedGnCheckCommands,
+  AURELIA_GN_TARGETS,
+} from '../../tools/chromium/gn-targets.mjs';
+import {
   classifyBuildFailure,
   formatDuration,
   ninjaBuildArgs,
   ninjaQueryArgs,
+  ninjaTargetFor,
   objectTargetFor,
   plannedObjectTargets,
   summarizeUsage,
@@ -174,7 +179,7 @@ describe('targeted-lite build command construction', () => {
       'out/Aurelia',
       '-j',
       '2',
-      '//chrome/browser/resources/aurelia:build_ts',
+      'chrome/browser/resources/aurelia:build_ts',
     ]);
     expect(
       ninjaQueryArgs({
@@ -188,6 +193,116 @@ describe('targeted-lite build command construction', () => {
       'query',
       'obj/chrome/browser/ui/webui/aurelia/aurelia/aurelia_ui.obj',
     ]);
+  });
+
+  it('passes exact Ninja argv to the build executor, never GN-style // labels', () => {
+    // Regression for run 38139216273: Siso/Ninja rejects GN labels beginning
+    // with //; GN's build.ninja phony aliases are "full label name with no
+    // leading slashes" (pinned GN cfcd774b, gn help ninja_rules).
+    const resourceArgv = ninjaBuildArgs({
+      outDirRelative: 'out/Aurelia',
+      jobs: compileJobsForMode('targeted-lite'),
+      targets: WEBUI_RESOURCE_TARGETS,
+    });
+    expect(resourceArgv).toEqual([
+      '-C',
+      'out/Aurelia',
+      '-j',
+      '2',
+      'chrome/browser/resources/aurelia:build_ts',
+      'chrome/browser/resources/aurelia:build_grd',
+      'chrome/browser/resources/aurelia:resources',
+      'chrome/browser/resources/newtab:build_ts',
+      'chrome/browser/resources/newtab:build_grd',
+      'chrome/browser/resources/newtab:resources',
+    ]);
+    expect(resourceArgv.some((entry) => entry.startsWith('//'))).toBe(false);
+
+    const cppArgv = ninjaBuildArgs({
+      outDirRelative: 'out/Aurelia',
+      jobs: compileJobsForMode('targeted'),
+      targets: TARGETED_CPP_TARGETS,
+    });
+    expect(cppArgv).toEqual([
+      '-C',
+      'out/Aurelia',
+      '-j',
+      '4',
+      'chrome/browser/ui/webui/aurelia:aurelia',
+      'chrome/browser/ui/webui/newtab:newtab',
+    ]);
+
+    const unitObjects = plannedObjectTargets(TARGETED_LITE_CPP_UNITS).map(
+      (unit) => unit.object,
+    );
+    const unitArgv = ninjaBuildArgs({
+      outDirRelative: 'out/Aurelia',
+      jobs: compileJobsForMode('targeted-lite'),
+      targets: unitObjects,
+    });
+    expect(unitArgv.slice(4)).toEqual(unitObjects);
+
+    expect(
+      ninjaBuildArgs({
+        outDirRelative: 'out/Aurelia',
+        jobs: 4,
+        targets: ['chrome'],
+      }),
+    ).toEqual(['-C', 'out/Aurelia', '-j', '4', 'chrome']);
+  });
+
+  it('converts GN labels to Ninja names only at the execution boundary', () => {
+    expect(ninjaTargetFor('//chrome/browser/resources/aurelia:build_ts')).toBe(
+      'chrome/browser/resources/aurelia:build_ts',
+    );
+    expect(ninjaTargetFor('chrome/browser/ui/webui/aurelia:aurelia')).toBe(
+      'chrome/browser/ui/webui/aurelia:aurelia',
+    );
+    expect(ninjaTargetFor('obj/a/b.obj')).toBe('obj/a/b.obj');
+    expect(ninjaTargetFor('chrome')).toBe('chrome');
+    // GN validation keeps the canonical // form (gn desc / gn check).
+    for (const label of [...WEBUI_RESOURCE_TARGETS, ...TARGETED_CPP_TARGETS]) {
+      expect(label.startsWith('//')).toBe(true);
+    }
+    for (const spec of AURELIA_GN_TARGETS) {
+      expect(spec.label.startsWith('//')).toBe(true);
+    }
+    expect(
+      scopedGnCheckCommands('/src', '/src/out/Aurelia', TARGETED_CPP_TARGETS, {
+        sep: '/',
+        relative: (from, to) => to.replace(`${from}/`, ''),
+        isAbsolute: () => false,
+      }),
+    ).toEqual([
+      {
+        target: '//chrome/browser/ui/webui/aurelia:aurelia',
+        args: [
+          'check',
+          'out/Aurelia',
+          '//chrome/browser/ui/webui/aurelia:aurelia',
+        ],
+      },
+      {
+        target: '//chrome/browser/ui/webui/newtab:newtab',
+        args: [
+          'check',
+          'out/Aurelia',
+          '//chrome/browser/ui/webui/newtab:newtab',
+        ],
+      },
+    ]);
+  });
+
+  it('never suppresses unknown-target errors from the build executor', () => {
+    // The object-target pre-check still fails hard and is classified; the
+    // conversion of label form is not an error suppression path.
+    expect(
+      classifyBuildFailure(
+        "ninja: error: unknown target '//chrome/browser/resources/aurelia:build_ts'",
+      ),
+    ).toBe('target-resolution');
+    expect(DRIVER).toContain('[error class: target-resolution]');
+    expect(DRIVER).toContain("throw new ValidationError(message, 'FAIL')");
   });
 
   it('refuses to plan a build without concrete targets or a job count', () => {
