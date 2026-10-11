@@ -25,10 +25,21 @@ that name. See [larger-runner specifications](https://docs.github.com/en/actions
 | `larger` (`windows-latest-8-cores`)  | 8 vCPUs / 32 GB RAM / 300 GB SSD | Proceeds only if the live measurement confirms at least 150 GB free on the exact Chromium destination volume and the required Windows toolchain is present.                                           |
 
 Earlier runner experiments recorded different free-space totals on preinstalled
-Windows volumes. Those historical measurements are not treated as a guarantee;
-the validation tool records the actual CPU, RAM, architecture, Visual Studio
-installation, and free space for each run. It never lowers the existing builder
-minimum in order to force a sync.
+Windows volumes (`219.9 GB` in run `38046646098` vs `147.0 GB` in run
+`38101262458` after the `actions/runner-images` `windows-2025-vs2026` transition
+in issue `#14004` / PR `#14851`, which preinstalled Visual Studio 2026
+Enterprise `18.10.12217.157`, MSVC `14.51.36231`, Windows SDK `10.0.26100.0`,
+and ~109 GB of toolchains on `C:`). Those historical measurements are not
+treated as a guarantee; `tools/chromium/prepare-runner.mjs` reclaims disk space
+only from an explicit allowlist of non-Chromium runner packages (`C:\Android`,
+`CodeQL`, `Boost`, `Go`, `Ruby`, `PyPy`, `ghcup`, `Miniconda`, `Julia`, `R`,
+database servers, and Chocolatey caches) while protecting Visual Studio, MSVC,
+Windows SDK, Git, Python, Node.js, and Rust, and provisions Windows SDK
+`10.0.28000.0` from Microsoft's Authenticode-verified installer before
+`tools/ci/check-builder.mjs` records the final CPU, RAM, architecture, Visual
+Studio installation, Windows SDK version, and free space for each run. It never
+lowers the existing 150 GB builder minimum or `10.0.28000.0` SDK requirement in
+order to force a sync.
 
 ## Chromium requirements and workflow design
 

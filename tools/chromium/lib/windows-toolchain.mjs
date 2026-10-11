@@ -32,11 +32,55 @@ import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   readdirSync as fsReaddirSync,
+  readFileSync as fsReadFileSync,
 } from 'node:fs';
 import path from 'node:path';
 
-/** Minimum Windows SDK version required by Chromium 155. */
+/**
+ * Minimum Windows SDK directory version required by Chromium 155.0.8059.40
+ * (`cfaadc5a132d78e1828635aa8405a499f3e14864`).
+ *
+ * Verified in upstream Chromium at pinned SHA `cfaadc5a132d78e1828635aa8405a499f3e14864`:
+ *  - `build/toolchain/win/setup_toolchain.py`: `SDK_VERSION = '10.0.28000.0'`
+ *    (passed directly to `vcvarsall.bat <arch> 10.0.28000.0` when
+ *    `DEPOT_TOOLS_WIN_TOOLCHAIN=0`; ignores the `windows_sdk_version` GN arg).
+ *  - `build/config/win/visual_studio_version.gni`: `windows_sdk_version = "10.0.28000.0"`.
+ *  - `build/config/win/BUILD.gn`: `NTDDI_VERSION=NTDDI_WIN11_BR`.
+ *  - `base/win/windows_version.cc`:
+ *    `#if !defined(NTDDI_WIN11_BR) #error Windows 10.0.28000.0 SDK or higher required.`
+ *    (introduced in upstream commit `5e7ea61dd227b6521dcbc299be43fa92d37e42ae`
+ *    and tightened in `a89c5c3387612bb30202ac73b918406c30de6a34`).
+ */
 export const REQUIRED_SDK_VERSION = '10.0.28000.0';
+
+/**
+ * Preferred Windows 11 SDK servicing release documented by upstream Chromium
+ * (`docs/windows_build_instructions.md` and `build/vs_toolchain.py`
+ * `TOOLCHAIN_HASH = '3bfcb536c8'`). Windows Kits installs all `10.0.28000.*`
+ * servicing builds under the `10.0.28000.0` directory root.
+ */
+export const PREFERRED_SDK_SUBVERSION = '10.0.28000.2270';
+
+/**
+ * Minimum SDK Debugging Tools version documented in upstream Chromium's
+ * `docs/windows_build_instructions.md` (`Debuggers\x64\dbghelp.dll`).
+ */
+export const MINIMUM_DEBUGGERS_VERSION = '10.0.26100.3323';
+
+/**
+ * Preprocessor macro in `Include/10.0.28000.0/shared/sdkddkver.h` required by
+ * `build/config/win/BUILD.gn` and `base/win/windows_version.cc`.
+ */
+export const REQUIRED_NTDDI_MACRO = 'NTDDI_WIN11_BR';
+
+/**
+ * GN-only validation (`gn gen`) also requires Windows SDK 10.0.28000.0:
+ * `build/toolchain/win/win_toolchain_data.gni` unconditionally executes
+ * `build/toolchain/win/setup_toolchain.py` for both `x86` and `x64` during
+ * `gn gen`, and `setup_toolchain.py` hardcodes `SDK_VERSION = '10.0.28000.0'`.
+ * An older SDK such as `10.0.26100.0` cannot be used safely for GN-only runs.
+ */
+export const GN_ONLY_REQUIRES_REQUIRED_SDK = true;
 
 /** Required Visual Studio component for C++ x64 compilation. */
 export const REQUIRED_VS_COMPONENT =
@@ -642,6 +686,9 @@ export function detectWindowsSdk({
     installedVersions,
     selectedVersion,
     requiredVersion,
+    preferredSubversion: PREFERRED_SDK_SUBVERSION,
+    requiredNtddiMacro: REQUIRED_NTDDI_MACRO,
+    gnOnlyRequiresRequiredSdk: GN_ONLY_REQUIRES_REQUIRED_SDK,
     isCompatible,
     headersOk,
     libsOk,
@@ -649,6 +696,137 @@ export function detectWindowsSdk({
     ok: problems.length === 0,
     problems,
     notes,
+  };
+}
+
+/**
+ * Deeply verify that a Windows SDK installation contains all headers, x64 and
+ * x86 libraries, preprocessor macros (`NTDDI_WIN11_BR`), and debugging tools
+ * required by Chromium's `setup_toolchain.py`, `vs_toolchain.py copy_dlls`, and
+ * `base/win/windows_version.cc`.
+ *
+ * @param {object} [options]
+ * @param {string|null} [options.sdkDir]
+ * @param {string} [options.version]
+ * @param {string} [options.platform]
+ * @param {Function} [options.exists]
+ * @param {Function|null} [options.readText]
+ * @returns {{ok: boolean, sdkDir: string|null, version: string, checks: object, problems: string[]}}
+ */
+export function verifyWindowsSdkInstallation({
+  sdkDir,
+  version = REQUIRED_SDK_VERSION,
+  platform = process.platform,
+  exists = existsSync,
+  readText = (filePath) => fsReadFileSync(filePath, 'utf8'),
+} = {}) {
+  const p = getPath(platform);
+  const problems = [];
+  if (!sdkDir) {
+    return {
+      ok: false,
+      sdkDir: null,
+      version,
+      checks: {
+        versionCompatible: false,
+        windowsH: false,
+        corecrtH: false,
+        sdkddkverH: false,
+        ntddiWin11BrMacro: false,
+        x64Libs: false,
+        x86Libs: false,
+        debuggersDll: false,
+      },
+      problems: ['Windows SDK directory is not set'],
+    };
+  }
+
+  const versionCompatible = isSdkVersionCompatible(
+    version,
+    REQUIRED_SDK_VERSION,
+  );
+  if (!versionCompatible) {
+    problems.push(
+      `Windows SDK version ${version} is older than required ${REQUIRED_SDK_VERSION}`,
+    );
+  }
+
+  const includeDir = p.join(sdkDir, 'Include', version);
+  const libDir = p.join(sdkDir, 'Lib', version);
+  const windowsHPath = p.join(includeDir, 'um', 'windows.h');
+  const corecrtHPath = p.join(includeDir, 'ucrt', 'corecrt.h');
+  const sdkddkverHPath = p.join(includeDir, 'shared', 'sdkddkver.h');
+
+  const windowsH = Boolean(exists(windowsHPath));
+  const corecrtH = Boolean(exists(corecrtHPath));
+  const sdkddkverH = Boolean(exists(sdkddkverHPath));
+  if (!windowsH || !corecrtH || !sdkddkverH) {
+    problems.push(
+      `Windows SDK ${version} is missing required headers under ${includeDir} (windows.h=${windowsH}, corecrt.h=${corecrtH}, sdkddkver.h=${sdkddkverH})`,
+    );
+  }
+
+  let ntddiWin11BrMacro = false;
+  if (sdkddkverH && typeof readText === 'function') {
+    try {
+      const content = readText(sdkddkverHPath);
+      ntddiWin11BrMacro =
+        typeof content === 'string' && content.includes(REQUIRED_NTDDI_MACRO);
+      if (!ntddiWin11BrMacro) {
+        problems.push(
+          `${sdkddkverHPath} does not define ${REQUIRED_NTDDI_MACRO} required by base/win/windows_version.cc`,
+        );
+      }
+    } catch (error) {
+      problems.push(`Failed to read ${sdkddkverHPath}: ${error.message}`);
+    }
+  } else if (sdkddkverH) {
+    ntddiWin11BrMacro = true;
+  }
+
+  const x64Kernel32 = p.join(libDir, 'um', 'x64', 'kernel32.lib');
+  const x64Ucrt = p.join(libDir, 'ucrt', 'x64', 'ucrt.lib');
+  const x64Libs = Boolean(exists(x64Kernel32) && exists(x64Ucrt));
+  if (!x64Libs) {
+    problems.push(
+      `Windows SDK ${version} is missing x64 libraries under ${libDir} (kernel32.lib or ucrt.lib)`,
+    );
+  }
+
+  // Chromium's build/toolchain/win/win_toolchain_data.gni invokes
+  // setup_toolchain.py for both x86 and x64 during `gn gen`.
+  const x86Kernel32 = p.join(libDir, 'um', 'x86', 'kernel32.lib');
+  const x86Ucrt = p.join(libDir, 'ucrt', 'x86', 'ucrt.lib');
+  const x86Libs = Boolean(exists(x86Kernel32) && exists(x86Ucrt));
+  if (!x86Libs) {
+    problems.push(
+      `Windows SDK ${version} is missing x86 libraries under ${libDir} required by win_toolchain_data.gni during gn gen`,
+    );
+  }
+
+  const dbghelpPath = p.join(sdkDir, 'Debuggers', 'x64', 'dbghelp.dll');
+  const debuggersDll = Boolean(exists(dbghelpPath));
+  if (!debuggersDll) {
+    problems.push(
+      `Windows SDK Debugging Tools (${dbghelpPath}) is missing; required by vs_toolchain.py copy_dlls during gn gen`,
+    );
+  }
+
+  return {
+    ok: problems.length === 0,
+    sdkDir,
+    version,
+    checks: {
+      versionCompatible,
+      windowsH,
+      corecrtH,
+      sdkddkverH,
+      ntddiWin11BrMacro,
+      x64Libs,
+      x86Libs,
+      debuggersDll,
+    },
+    problems,
   };
 }
 

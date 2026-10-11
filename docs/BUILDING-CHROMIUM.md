@@ -206,6 +206,66 @@ MSVC compiler (`cl.exe`), `vcvarsall.bat`, and a compatible Windows SDK are
 installed and complete. If any component is missing or incompatible, the runner
 preflight reports `BLOCKED` before downloading any source.
 
+### Verified Windows SDK requirements at Chromium 155.0.8059.40 (`cfaadc5a132d78e1828635aa8405a499f3e14864`)
+
+Inspection of upstream Chromium at pinned revision
+`cfaadc5a132d78e1828635aa8405a499f3e14864` establishes:
+
+- **Preferred packaged SDK release**: `10.0.28000.2270`
+  (`docs/windows_build_instructions.md` and `build/vs_toolchain.py`
+  `TOOLCHAIN_HASH = '3bfcb536c8'`), with SDK Debugging Tools
+  `>= 10.0.26100.3323` (`Debuggers\x64\dbghelp.dll`).
+- **Minimum supported SDK directory version**: `10.0.28000.0`
+  (`NTDDI_WIN11_BR`), bumped from `10.0.26100.0` in upstream commit
+  `5e7ea61dd227b6521dcbc299be43fa92d37e42ae` and enforced by preprocessor check
+  in `a89c5c3387612bb30202ac73b918406c30de6a34`.
+- **Why SDK `10.0.26100.0` cannot be used for GN-only validation**:
+  1. `build/toolchain/win/win_toolchain_data.gni` unconditionally executes
+     `build/toolchain/win/setup_toolchain.py` for both `x86` and `x64` during
+     `gn gen`.
+  2. `setup_toolchain.py` ignores the `windows_sdk_version` GN argument,
+     hardcodes `SDK_VERSION = '10.0.28000.0'`, invokes
+     `vcvarsall.bat amd64 10.0.28000.0` and
+     `vcvarsall.bat amd64_x86 10.0.28000.0`, and verifies that every `INCLUDE`
+     and `LIB` directory exists on disk.
+  3. `build/toolchain/win/BUILD.gn` executes `vs_toolchain.py copy_dlls` during
+     `gn gen`, requiring `Debuggers\x64\dbghelp.dll`.
+  4. `build/config/win/BUILD.gn` defines `NTDDI_VERSION=NTDDI_WIN11_BR` and
+     `base/win/windows_version.cc` fails with
+     `#error Windows 10.0.28000.0 SDK or higher required.` if `NTDDI_WIN11_BR`
+     is undefined in `Include/10.0.28000.0/shared/sdkddkver.h`.
+
+### Automated runner preparation (`tools/chromium/prepare-runner.mjs`)
+
+GitHub's `windows-2025` runner image (`windows-2025-vs2026`) currently ships
+Visual Studio 2026 Enterprise (`18.10.12217.157`) and MSVC `14.51.36231` with
+Windows SDK `10.0.26100.0` and ~147 GB of free disk on `C:` (run
+`38101262458`), down from `219.9 GB` in run `38046646098` prior to the
+`actions/runner-images` Visual Studio 2026 image transition (`#14004`, PR
+`#14851`).
+
+When `tools/chromium/ci-validation.mjs` runs on a GitHub-hosted Windows x64
+runner that meets the mode's CPU, RAM, and Visual Studio requirements,
+`tools/chromium/prepare-runner.mjs` prepares the runner before the final
+preflight verdict:
+
+1. **Safe non-Chromium disk cleanup**: Removes only allowlisted preinstalled
+   non-Chromium directories (`C:\Android`, `C:\hostedtoolcache\windows\{CodeQL,Boost,Go,Ruby,PyPy}`,
+   `C:\ghcup`, `C:\Miniconda*`, `C:\Julia`, `C:\Program Files\{Haskell,R,PostgreSQL,MySQL,MongoDB}`,
+   `C:\SeleniumWebDrivers`, `C:\ProgramData\chocolatey\cache`) while strictly
+   protecting Visual Studio, MSVC, Windows Kits/SDK, Git, Python, Node.js,
+   Rust, Windows system directories, and the active workspace.
+2. **Automated Windows SDK `10.0.28000.0` installation**: Downloads Microsoft's
+   official `winsdksetup.exe`, verifies its Microsoft Corporation Authenticode
+   digital signature before execution, installs
+   `OptionId.DesktopCPPx64 OptionId.DesktopCPPx86 OptionId.UWPCPP OptionId.WindowsDesktopDebuggers`,
+   removes the temporary installer directory, and verifies `10.0.28000.0`
+   headers (`windows.h`, `corecrt.h`, `sdkddkver.h` with `NTDDI_WIN11_BR`),
+   `x64`/`x86` libraries, and `Debuggers\x64\dbghelp.dll`.
+3. **Unchanged safety floors**: Re-runs `tools/ci/check-builder.mjs` after
+   preparation and blocks before source sync unless at least **150 GB** of free
+   disk and Windows SDK **`10.0.28000.0`+** are verified.
+
 ## Troubleshooting
 
 | Result                                              | Meaning / next action                                                                                                                                                                  |

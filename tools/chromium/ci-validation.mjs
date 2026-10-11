@@ -38,7 +38,12 @@ import { isGithubHostedRunner } from '../ci/runner-environment.mjs';
 import { isMainModule } from '../lib/entry.mjs';
 import { captureCommand, resolveSpawn, withPathPrefix } from './lib/exec.mjs';
 import { describeGitEnvironment } from './lib/windows-git.mjs';
+import {
+  isSdkVersionCompatible,
+  REQUIRED_SDK_VERSION,
+} from './lib/windows-toolchain.mjs';
 import { loadConfig, REPO_ROOT } from './lib/config.mjs';
+import { prepareHostedWindowsRunner } from './prepare-runner.mjs';
 import { planStaging } from './stage-runtime.mjs';
 
 export const VALIDATION_LEVELS = Object.freeze(['gn', 'targeted', 'full']);
@@ -358,7 +363,20 @@ function makeSummary({
     `| Free disk on Chromium destination volume | ${formatGb(actualFree)} | ${requirements?.freeDiskGb ?? 'unknown'} GB |`,
     `| Runner environment | ${capabilities?.runnerEnvironment ?? 'unknown'} | GitHub-hosted |`,
     `| Architecture / OS | ${capabilities?.architecture ?? 'unknown'} / ${capabilities?.platform ?? 'unknown'} | Windows x64 |`,
+    `| Windows SDK | ${capabilities?.windowsSdk ?? 'unknown'} | ${REQUIRED_SDK_VERSION}+ |`,
     '',
+    ...(capabilities?.preparation
+      ? [
+          '## Runner preparation (pre-sync)',
+          '',
+          `- Free disk before cleanup: \`${formatGb(capabilities.preparation.before?.freeDiskGb)}\``,
+          `- Free disk after preparation: \`${formatGb(capabilities.preparation.after?.freeDiskGb)}\` (reclaimed \`${formatGb(capabilities.preparation.cleanup?.reclaimedGb ?? 0)}\`)`,
+          `- Windows SDK before preparation: \`${capabilities.preparation.before?.windowsSdk ?? 'none'}\``,
+          `- Windows SDK after preparation: \`${capabilities.preparation.after?.windowsSdk ?? 'none'}\` (installed=${capabilities.preparation.sdkProvisioning?.installed ?? false})`,
+          `- Visual Studio / MSVC intact: \`${capabilities.preparation.after?.visualStudioIntact ?? false}\``,
+          '',
+        ]
+      : []),
     '## Milestones',
     '',
     '| Milestone | Result | Evidence / reason |',
@@ -843,16 +861,65 @@ export async function runValidation({
 
   try {
     log('Measuring the selected GitHub-hosted Windows runner before any Chromium source sync.');
-    const builder = checkBuilder({
+    let builder = checkBuilder({
       dest: resolvedDest,
       config,
       mode,
       log: (line) => log(`runner: ${line}`),
     });
-    const destinationFreeDiskGb = getDestFreeDiskGb(resolvedDest);
+    let destinationFreeDiskGb = getDestFreeDiskGb(resolvedDest);
     const requirements = builder.requirements;
     context.requirements = requirements;
+
+    let preparation = null;
+    const canPrepareHostedWindowsRunner =
+      isGithubHostedRunner() &&
+      process.platform === 'win32' &&
+      process.arch === 'x64' &&
+      builder.capabilities.cpuCores >= requirements.cpuCores &&
+      builder.capabilities.ramGb >= requirements.ramGb &&
+      builder.capabilities.visualStudio !== null &&
+      builder.capabilities.msvcCompiler !== null;
+    const needsDiskCleanup =
+      destinationFreeDiskGb === null ||
+      destinationFreeDiskGb < requirements.freeDiskGb;
+    const needsSdkInstall =
+      builder.capabilities.windowsSdk === null ||
+      !isSdkVersionCompatible(
+        builder.capabilities.windowsSdk,
+        REQUIRED_SDK_VERSION,
+      );
+
+    if (
+      canPrepareHostedWindowsRunner &&
+      (needsDiskCleanup || needsSdkInstall)
+    ) {
+      log(
+        'Preparing the GitHub-hosted Windows runner (safe non-Chromium disk cleanup and Windows SDK 10.0.28000.0 provisioning) before source sync.',
+      );
+      preparation = prepareHostedWindowsRunner({
+        dest: resolvedDest,
+        artifacts: resolvedArtifacts,
+        minimumFreeDiskGb: requirements.freeDiskGb,
+        log: (line) => log(`runner-prep: ${line}`),
+      });
+      builder = checkBuilder({
+        dest: resolvedDest,
+        config,
+        mode,
+        log: (line) => log(`runner (post-prep): ${line}`),
+      });
+      destinationFreeDiskGb = getDestFreeDiskGb(resolvedDest);
+    }
+
     const problems = [...builder.problems];
+    if (preparation && !preparation.ok && preparation.problems.length > 0) {
+      for (const prepProblem of preparation.problems) {
+        if (!problems.includes(prepProblem)) {
+          problems.push(prepProblem);
+        }
+      }
+    }
     if (
       destinationFreeDiskGb === null ||
       destinationFreeDiskGb < requirements.freeDiskGb
@@ -888,6 +955,7 @@ export async function runValidation({
     context.capabilities = {
       ...builder.capabilities,
       tooling,
+      preparation,
       runnerSize,
       destination: resolvedDest,
       destinationFreeDiskGb,

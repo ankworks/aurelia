@@ -92,6 +92,18 @@ describe('internal documentation links', () => {
     expect(result.problems).toEqual([]);
   });
 
+  it('resolves URL-encoded relative links to filenames containing spaces', () => {
+    const root = fixture({
+      'docs/update/UPDATE 01.md': '# Update 01\n\n## Overview\n',
+      'docs/update/UPDATE 02.md':
+        '# Update 02\n\nSee [Update 01](./UPDATE%2001.md#overview).\n',
+    });
+    const result = checkDocsLinks({ root });
+    expect(result.problems).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.checked).toBe(1);
+  });
+
   it('counts external links without fetching them', () => {
     const root = fixture({
       'README.md': '# Home\n\n[site](https://example.com/a#b)\n',
