@@ -184,7 +184,6 @@ remains **BSD-3-Clause**, and its notices are preserved. See
 Report vulnerabilities privately — never in a public issue. See
 [SECURITY.md](SECURITY.md).
 
-
 <a href="https://www.star-history.com/#ankworks/aurelia&Date">
     <picture>
         <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ankworks/aurelia&type=Date&theme=dark" />

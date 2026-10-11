@@ -155,3 +155,21 @@ describe('running and capturing', () => {
     expect(result.status).toBeNull();
   });
 });
+
+describe('child process environment consistency', () => {
+  it('propagates custom environment variables including DEPOT_TOOLS_WIN_TOOLCHAIN', () => {
+    const parentEnv = {
+      PATH: '/usr/bin:/bin',
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
+      DEPOT_TOOLS_UPDATE: '0',
+      GCLIENT_PY3: '1',
+    };
+    const child = resolveSpawn(
+      { file: 'node', args: ['-v'] },
+      { platform: 'win32', env: parentEnv },
+    );
+    expect(child.options.env.DEPOT_TOOLS_WIN_TOOLCHAIN).toBe('0');
+    expect(child.options.env.DEPOT_TOOLS_UPDATE).toBe('0');
+    expect(child.options.env.GCLIENT_PY3).toBe('1');
+  });
+});

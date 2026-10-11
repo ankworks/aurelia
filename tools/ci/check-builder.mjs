@@ -26,11 +26,18 @@
  * Exit codes: 0 the resource/toolchain gate passes, 1 it fails, 2 the check itself failed.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, statfsSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync as fsReaddirSync,
+  statfsSync,
+  writeFileSync,
+} from 'node:fs';
 import { cpus, platform, release, totalmem, arch } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from '../lib/entry.mjs';
+import { detectWindowsToolchain } from '../chromium/lib/windows-toolchain.mjs';
 
 export const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -62,53 +69,20 @@ export function freeDiskGb(target) {
   }
 }
 
-function toolVersion(command, args = ['--version']) {
-  const result = spawnSync(command, args, {
+function toolVersion(
+  command,
+  args = ['--version'],
+  { spawn = spawnSync, env = process.env } = {},
+) {
+  const result = spawn(command, args, {
     encoding: 'utf8',
-    env: process.env,
+    env,
   });
   if (result.error !== undefined || result.status !== 0) {
     return null;
   }
   const text = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
   return text.length > 0 ? text.split('\n')[0] : 'present';
-}
-
-function visualStudioPath() {
-  if (process.platform !== 'win32') {
-    return null;
-  }
-  const programFilesX86 = process.env['ProgramFiles(x86)'];
-  const candidates = [
-    programFilesX86 === undefined
-      ? null
-      : path.join(
-          programFilesX86,
-          'Microsoft Visual Studio',
-          'Installer',
-          'vswhere.exe',
-        ),
-    'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe',
-  ].filter((value) => value !== null);
-  const vswhere = candidates.find((value) => existsSync(value));
-  if (vswhere === undefined) {
-    return null;
-  }
-  const result = spawnSync(
-    vswhere,
-    [
-      '-latest',
-      '-products',
-      '*',
-      '-requires',
-      'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
-      '-property',
-      'installationPath',
-    ],
-    { encoding: 'utf8', env: process.env },
-  );
-  const found = (result.stdout ?? '').trim();
-  return found.length === 0 ? null : found;
 }
 
 export const PREFLIGHT_MODES = Object.freeze(['gn', 'targeted', 'full']);
@@ -196,27 +170,55 @@ export function checkBuilder({
   dest,
   config,
   mode = 'full',
+  env = process.env,
+  platform: plat = platform(),
+  spawn = spawnSync,
+  exists = existsSync,
+  readdirSync = fsReaddirSync,
   log = () => {},
 } = {}) {
   const requirements = requirementsForMode(config, mode);
+  const toolchain =
+    plat === 'win32'
+      ? detectWindowsToolchain({
+          env,
+          platform: plat,
+          spawn,
+          exists,
+          readdirSync,
+        })
+      : null;
 
   const capabilities = {
-    platform: platform(),
+    platform: plat,
     platformRelease: release(),
     architecture: arch(),
     cpuModel: cpus()[0]?.model?.trim() ?? 'unknown',
     cpuCores: cpus().length,
     ramGb: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
     node: process.version,
-    git: toolVersion('git'),
-    python: toolVersion('python') ?? toolVersion('python3'),
-    visualStudio: visualStudioPath(),
+    git: toolVersion('git', ['--version'], { spawn, env }),
+    python:
+      toolVersion('python', ['--version'], { spawn, env }) ??
+      toolVersion('python3', ['--version'], { spawn, env }),
+    depotToolsWinToolchain: env.DEPOT_TOOLS_WIN_TOOLCHAIN ?? null,
+    visualStudio: toolchain?.vs?.installationPath ?? null,
+    visualStudioVersion: toolchain?.vs?.version ?? null,
+    msvcToolset: toolchain?.vs?.msvcToolsetVersion ?? null,
+    msvcCompiler: toolchain?.vs?.clExe ?? null,
+    windowsSdk: toolchain?.sdk?.selectedVersion ?? null,
+    windowsSdkDir: toolchain?.sdk?.sdkDir ?? null,
     freeDisk: {},
     checkedAt: new Date().toISOString(),
   };
 
   const problems = [];
   const notes = [];
+
+  if (toolchain !== null) {
+    problems.push(...toolchain.problems);
+    notes.push(...toolchain.notes);
+  }
 
   const dirs = candidateDestinations(dest);
   for (const dir of dirs) {
@@ -250,14 +252,10 @@ export function checkBuilder({
   if (capabilities.python === null) {
     notes.push('python was not found on PATH; depot_tools needs it');
   }
-  if (process.platform === 'win32' && capabilities.visualStudio === null) {
-    problems.push(
-      'Visual Studio with the C++ x64 toolchain (VC.Tools.x86.x64) was not found',
-    );
-  }
-  if (process.platform !== 'win32') {
+  if (plat !== 'win32') {
     const hasCompiler = ['clang++', 'g++'].some(
-      (compiler) => toolVersion(compiler) !== null,
+      (compiler) =>
+        toolVersion(compiler, ['--version'], { spawn, env }) !== null,
     );
     if (!hasCompiler) {
       notes.push('no C++ compiler found on PATH (clang++ or g++)');
@@ -271,7 +269,30 @@ export function checkBuilder({
     `cpu: ${capabilities.cpuCores} logical core(s), ram: ${capabilities.ramGb} GB`,
   );
   if (capabilities.visualStudio !== null) {
-    log(`visual studio: ${capabilities.visualStudio}`);
+    log(
+      `visual studio: ${capabilities.visualStudio}${
+        capabilities.visualStudioVersion
+          ? ` (${capabilities.visualStudioVersion})`
+          : ''
+      }`,
+    );
+  }
+  if (capabilities.msvcCompiler !== null) {
+    log(
+      `msvc compiler: ${capabilities.msvcCompiler}${
+        capabilities.msvcToolset ? ` (${capabilities.msvcToolset})` : ''
+      }`,
+    );
+  }
+  if (capabilities.windowsSdk !== null) {
+    log(
+      `windows sdk: ${capabilities.windowsSdk}${
+        capabilities.windowsSdkDir ? ` (${capabilities.windowsSdkDir})` : ''
+      }`,
+    );
+  }
+  if (capabilities.depotToolsWinToolchain !== null) {
+    log(`DEPOT_TOOLS_WIN_TOOLCHAIN: ${capabilities.depotToolsWinToolchain}`);
   }
 
   return {

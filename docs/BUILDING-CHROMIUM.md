@@ -170,6 +170,42 @@ handle, and falls back to `$GIT_CACHE_PATH` and then to `RuntimeError`, which
 `GitWrapper.cache_dir` handles. A cache directory configured later is used as
 before.
 
+## Windows toolchain configuration (`DEPOT_TOOLS_WIN_TOOLCHAIN=0`)
+
+When Chromium synchronizes dependencies via `gclient sync`, its
+`src/build/vs_toolchain.py` hook defaults to downloading Google's internal
+packaged Windows toolchain from Google Cloud Storage (`chrome-wintoolchain`
+bucket). External builders and GitHub Actions runners do not have access to this
+private bucket, resulting in HTTP 401 `ServiceException: 401 Anonymous caller
+does not have storage.objects.list access` (run 38046646098).
+
+Chromium's toolchain scripts support building with a locally installed Visual
+Studio and Windows SDK by setting:
+
+```env
+DEPOT_TOOLS_WIN_TOOLCHAIN=0
+```
+
+Setting `DEPOT_TOOLS_WIN_TOOLCHAIN=0`:
+
+1. Skips the private toolchain package download in `vs_toolchain.py update`.
+2. Directs `vs_toolchain.py` and `build/toolchain/win/setup_toolchain.py` to
+   locate the local Visual Studio installation (VS 2022/2026 with
+   `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`).
+3. Uses the installed Windows SDK (`10.0.28000.0` or higher, matching
+   `base/win/windows_version.cc` and `build/vs_toolchain.py`).
+
+The environment variable is set at the workflow level in
+`.github/workflows/chromium-build.yml` and is propagated to all child
+processes spawned by `tools/chromium/ci-validation.mjs` and
+`tools/chromium/sync.mjs`.
+
+Before initiating Chromium source synchronization, `tools/ci/check-builder.mjs`
+and `tools/chromium/lib/windows-toolchain.mjs` validate that Visual Studio, the
+MSVC compiler (`cl.exe`), `vcvarsall.bat`, and a compatible Windows SDK are
+installed and complete. If any component is missing or incompatible, the runner
+preflight reports `BLOCKED` before downloading any source.
+
 ## Troubleshooting
 
 | Result                                              | Meaning / next action                                                                                                                                                                  |
@@ -182,6 +218,7 @@ before.
 | `COMPILED` but no browser zip                       | The binary was too large or failed staging/postconditions. The summary explains why; this does not downgrade compiler evidence.                                                        |
 | Full compiler succeeds but smoke test is absent     | Compilation is established, runtime integration is not. Run and record the separate smoke test before claiming `TESTED`.                                                               |
 | `FileNotFoundError: [WinError 2]` in `git_cache.py` | `git.bat` was not resolvable. The shim in `<dest>/.aurelia-git-shim` was not created or was not on PATH. Read the `tooling:` lines in `artifacts/logs/pinned-sync.log`.                |
+| `ServiceException: 401` in `vs_toolchain.py`        | `DEPOT_TOOLS_WIN_TOOLCHAIN` was not set to `0`. Ensure `DEPOT_TOOLS_WIN_TOOLCHAIN=0` is set in the workflow environment.                                                               |
 
 ## Related documentation
 

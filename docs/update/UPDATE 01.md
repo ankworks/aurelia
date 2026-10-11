@@ -32,14 +32,14 @@ Although the validation did not complete successfully, it helped identify the ne
 
 Our goal was to validate Aurelia against the exact Chromium revision used by the project.
 
-| Component | Configuration |
-|:--|:--|
-| Chromium | `155.0.8059.40` |
-| Revision | `cfaadc5a132d78e1828635aa8405a499f3e14864` |
-| Operating System | Windows |
-| CI Provider | GitHub Actions |
-| Runner | GitHub-hosted Standard |
-| Validation Mode | `gn` |
+| Component        | Configuration                              |
+| :--------------- | :----------------------------------------- |
+| Chromium         | `155.0.8059.40`                            |
+| Revision         | `cfaadc5a132d78e1828635aa8405a499f3e14864` |
+| Operating System | Windows                                    |
+| CI Provider      | GitHub Actions                             |
+| Runner           | GitHub-hosted Standard                     |
+| Validation Mode  | `gn`                                       |
 
 The intended process was:
 
@@ -70,13 +70,13 @@ This attempt stopped before Aurelia patches and GN generation could run.
 
 The GitHub Actions runner reported:
 
-| Resource | Available |
-|:--|:--|
-| CPU | 4 logical cores |
-| RAM | 16 GB |
-| Free disk | Approximately 219.9 GB |
-| Visual Studio | Installed |
-| Platform | Windows |
+| Resource      | Available              |
+| :------------ | :--------------------- |
+| CPU           | 4 logical cores        |
+| RAM           | 16 GB                  |
+| Free disk     | Approximately 219.9 GB |
+| Visual Studio | Installed              |
+| Platform      | Windows                |
 
 The environment passed Aurelia's GN-only resource preflight.
 
@@ -147,18 +147,18 @@ This configuration tells Chromium to use a locally installed Visual Studio toolc
 
 ## 📊 Validation Results
 
-| Stage | Result |
-|:--|:--|
-| Runner resource preflight | ✅ PASS |
-| depot_tools preparation | ✅ PASS |
-| Windows Git compatibility | ✅ PASS |
-| Chromium source synchronization | ⚠️ Progressed into hooks |
-| Windows toolchain initialization | ❌ FAILED |
-| Complete `gclient sync` | ❌ FAILED |
-| Aurelia patch application | ⏳ NOT TESTED |
-| GN generation | ⏳ NOT TESTED |
-| C++ compilation | ⏳ NOT TESTED |
-| Browser runtime | ⏳ NOT TESTED |
+| Stage                            | Result                   |
+| :------------------------------- | :----------------------- |
+| Runner resource preflight        | ✅ PASS                  |
+| depot_tools preparation          | ✅ PASS                  |
+| Windows Git compatibility        | ✅ PASS                  |
+| Chromium source synchronization  | ⚠️ Progressed into hooks |
+| Windows toolchain initialization | ❌ FAILED                |
+| Complete `gclient sync`          | ❌ FAILED                |
+| Aurelia patch application        | ⏳ NOT TESTED            |
+| GN generation                    | ⏳ NOT TESTED            |
+| C++ compilation                  | ⏳ NOT TESTED            |
+| Browser runtime                  | ⏳ NOT TESTED            |
 
 **Important:** Source transfer progress does not imply a completed Chromium checkout.
 
@@ -172,7 +172,7 @@ The next step is to update the GitHub Actions build environment.
 
 ```yaml
 env:
-  DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
+  DEPOT_TOOLS_WIN_TOOLCHAIN: "0"
 ```
 
 ### Required Verification
@@ -194,15 +194,15 @@ The goal is to resolve this environment issue without modifying Chromium's upstr
 
 Once synchronization succeeds, the next engineering milestones are:
 
-| Milestone | Goal | Current Status |
-|:--|:--|:--|
-| 01 | Complete Chromium synchronization | 🔄 In progress |
-| 02 | Apply Aurelia patches | ⏳ Pending |
-| 03 | Generate GN build files | ⏳ Pending |
-| 04 | Validate WebUI resources | ⏳ Pending |
-| 05 | Compile Aurelia C++ targets | ⏳ Pending |
-| 06 | Build a browser executable | ⏳ Pending |
-| 07 | Perform browser runtime testing | ⏳ Pending |
+| Milestone | Goal                              | Current Status |
+| :-------- | :-------------------------------- | :------------- |
+| 01        | Complete Chromium synchronization | 🔄 In progress |
+| 02        | Apply Aurelia patches             | ⏳ Pending     |
+| 03        | Generate GN build files           | ⏳ Pending     |
+| 04        | Validate WebUI resources          | ⏳ Pending     |
+| 05        | Compile Aurelia C++ targets       | ⏳ Pending     |
+| 06        | Build a browser executable        | ⏳ Pending     |
+| 07        | Perform browser runtime testing   | ⏳ Pending     |
 
 Our immediate target is:
 
@@ -215,8 +215,8 @@ Our immediate target is:
 - [Chromium Validation Run #38046646098](https://github.com/ankworks/aurelia/actions/runs/38046646098)
 - [Aurelia Source Repository](https://github.com/ankworks/aurelia)
 - [GitHub Actions](https://github.com/ankworks/aurelia/actions)
-- [Development Roadmap](Development-Roadmap)
-- [Building Aurelia](Building-Aurelia)
+- [Development Roadmap](../ROADMAP.md)
+- [Building Aurelia](../../BUILDING.md)
 
 ---
 
