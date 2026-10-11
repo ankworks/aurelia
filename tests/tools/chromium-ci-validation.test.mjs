@@ -372,7 +372,7 @@ describe('GN-only validation on the standard runner', () => {
     ).toEqual([
       'PREFLIGHT PASS',
       'CHROMIUM SYNC PASS',
-      'GN GEN PASS',
+      'GN-ONLY PASS',
       'COMPILATION NOT TESTED',
     ]);
   });
@@ -386,7 +386,7 @@ describe('GN-only validation on the standard runner', () => {
       },
     };
     expect(milestoneVerdicts(stages, 'gn')[2]).toMatchObject({
-      text: 'GN GEN FAIL',
+      text: 'GN-ONLY FAIL',
       status: 'FAIL',
     });
   });
@@ -399,8 +399,30 @@ describe('GN-only validation on the standard runner', () => {
       'gn-effective-arguments': { status: 'FAIL', details: 'policy violation' },
     };
     const verdicts = milestoneVerdicts(stages, 'gn');
-    expect(verdicts[2]).toMatchObject({ text: 'GN GEN FAIL', status: 'FAIL' });
+    expect(verdicts[2]).toMatchObject({ text: 'GN-ONLY FAIL', status: 'FAIL' });
     expect(verdicts[3].text).toBe('COMPILATION NOT TESTED');
+  });
+
+  it('distinguishes successful gn gen from failed downstream target verification', () => {
+    const stages = {
+      ...passing([
+        'gn-argument-policy',
+        'depot-tools-bootstrap',
+        'gn-generation',
+        'gn-effective-arguments',
+      ]),
+      'target-labels': {
+        status: 'FAIL',
+        details: 'unsupported GN field query',
+      },
+    };
+    expect(milestoneVerdicts(stages, 'gn')[2]).toMatchObject({
+      key: 'gn-only',
+      text: 'GN-ONLY FAIL',
+      status: 'FAIL',
+      detail: expect.stringContaining('gn gen: PASS'),
+    });
+    expect(stages['gn-generation'].status).toBe('PASS');
   });
 
   it('reports a blocked preflight without implying sync or GN ran', () => {
@@ -411,7 +433,7 @@ describe('GN-only validation on the standard runner', () => {
     expect(verdicts.map((verdict) => verdict.text)).toEqual([
       'PREFLIGHT BLOCKED',
       'CHROMIUM SYNC NOT TESTED',
-      'GN GEN NOT TESTED',
+      'GN-ONLY NOT TESTED',
       'COMPILATION NOT TESTED',
     ]);
   });

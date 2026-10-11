@@ -171,10 +171,10 @@ export function milestoneVerdicts(stages, mode) {
       detail: stages['pinned-sync']?.details ?? 'Not reached.',
     },
     {
-      key: 'gn-gen',
-      text: text('GN GEN', gn),
+      key: 'gn-only',
+      text: text('GN-ONLY', gn),
       status: gn,
-      detail: 'GN policy, pinned depot_tools bootstrap, gn gen, effective arguments, target labels, and gn check.',
+      detail: `gn gen: ${stages['gn-generation']?.status ?? 'NOT TESTED'}; complete gate also requires GN policy, bootstrap, effective arguments, target verification and scoped gn check.`,
     },
     {
       key: 'compilation',
@@ -1415,7 +1415,7 @@ export async function runValidation({
     writeSummary(context, 'PASS');
     log(
       mode === 'gn'
-        ? 'PASS: gn validation completed. GN GEN PASS only; COMPILATION NOT TESTED.'
+        ? 'PASS: GN-only validation completed (generation, target verification and scoped check); COMPILATION NOT TESTED.'
         : `PASS: ${mode} validation completed. Chromium compiler success is recorded only for commands that exited with code 0.`,
     );
     return { status: 'PASS', exitCode: 0, summary: path.join(resolvedArtifacts, 'build-summary.md') };

@@ -103,10 +103,12 @@ uses Aurelia's pinned tooling in this order:
    only after all previous stages in the same run pass.
 
 The summary reports four separate milestones: `PREFLIGHT`, `CHROMIUM SYNC`,
-`GN GEN`, and `COMPILATION`. A `gn` run can therefore show
-`PREFLIGHT PASS`, `CHROMIUM SYNC PASS`, `GN GEN PASS`, and
-`COMPILATION NOT TESTED` together. That combination is the correct, honest
-result for GN-only validation.
+`GN-ONLY`, and `COMPILATION`. The `GN-ONLY` milestone includes policy,
+bootstrap, generation, effective arguments, target verification and scoped
+`gn check`; the stage table independently records `GN generation`. Thus a run
+with `gn gen` **PASS** and target verification **FAIL** reports `GN-ONLY FAIL`,
+not `GN GEN FAIL`. A fully passing `gn` run reports `GN-ONLY PASS` alongside
+`COMPILATION NOT TESTED`.
 
 The selected GN labels come from the checked-in Aurelia overlay and the
 `build_webui()` template at the configured Chromium pin. A missing label or
