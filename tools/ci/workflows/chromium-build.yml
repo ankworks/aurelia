@@ -30,6 +30,11 @@ on:
           - standard
           - larger
         default: standard
+      chromium_dest:
+        description: Optional absolute path for the Chromium checkout. Leave empty to use RUNNER_TEMP\aurelia-chromium. Set it to a directory on a volume that runner-preflight reports as meeting the 150 GB free-disk floor (the C and D drives are separate volumes on GitHub-hosted Windows runners, so cleanup on C cannot free space on D).
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -46,6 +51,7 @@ jobs:
     env:
       AURELIA_VALIDATION_LEVEL: ${{ inputs.validation_level || 'gn' }}
       AURELIA_RUNNER_SIZE: ${{ inputs.runner_size || 'standard' }}
+      AURELIA_CHROMIUM_DEST: ${{ inputs.chromium_dest }}
       DEPOT_TOOLS_UPDATE: '0'
       DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
       GCLIENT_PY3: '1'
@@ -67,7 +73,12 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
-          $destination = Join-Path $env:RUNNER_TEMP 'aurelia-chromium'
+          if ([string]::IsNullOrWhiteSpace($env:AURELIA_CHROMIUM_DEST)) {
+            $destination = Join-Path $env:RUNNER_TEMP 'aurelia-chromium'
+          } else {
+            $destination = $env:AURELIA_CHROMIUM_DEST
+          }
+          Write-Host "chromium destination: $destination"
           $artifactDirectory = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
           & node tools/chromium/ci-validation.mjs `
             --mode $env:AURELIA_VALIDATION_LEVEL `
