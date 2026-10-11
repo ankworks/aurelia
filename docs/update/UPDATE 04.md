@@ -9,7 +9,7 @@
 ![Chromium](https://img.shields.io/badge/Chromium-155.0.8059.40-4285F4?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D4?style=flat-square)
 ![CI](https://img.shields.io/badge/CI-GitHub_Actions-2088FF?style=flat-square)
-![Status](https://img.shields.io/badge/Status-GN_Generated-F59E0B?style=flat-square)
+![Status](https://img.shields.io/badge/Status-GN_Only_PASS-34A853?style=flat-square)
 
 **AnkWorks · Aurelia Browser**
 
@@ -21,10 +21,10 @@
 
 Aurelia Browser is an experimental, privacy-oriented browser project built on a pinned Chromium foundation. Its WebUI pages live in an Aurelia-owned overlay; a small, digest-verified patch connects their controllers and resources to Chromium's build graph. The project aims to preserve Chromium's security architecture while keeping its upstream changes reviewable.
 
-Since [Development Update #03](./UPDATE%2003.md), a standard GitHub-hosted Windows runner has **successfully generated the Chromium 155 GN build graph for the first time**. This is an important configuration milestone, not a completed build. The same run stopped at a separate target-inspection command, before the scoped GN dependency checks.
+Since [Development Update #03](./UPDATE%2003.md), a standard GitHub-hosted Windows runner **generated the Chromium 155 GN build graph for the first time**. That first run stopped at target inspection. After a pinned-GN-compatible validation fix, a **separate Windows run completed the entire GN-only workflow**, including target verification and scoped dependency checks. Neither run compiled a browser.
 
 > [!IMPORTANT]
-> **GN generation passed; the complete GN-only workflow did not.** No Aurelia C++ target or Chromium browser was compiled in this run. No browser executable was generated, launched, packaged, or made available for download.
+> **GN-only validation passed; compilation and runtime have not been tested.** No Aurelia C++ target or Chromium browser was compiled in these runs. No browser executable was generated, launched, packaged, or made available for download.
 
 ---
 
@@ -52,7 +52,22 @@ GN generation evaluated the pinned source tree, Aurelia's installed overlay and 
 | WebUI resource and C++ compilation                                                                                       | **NOT TESTED**                               |
 | Browser executable, packaging and runtime smoke test                                                                     | **NOT GENERATED / NOT TESTED**               |
 
-The target query tried to display `type` as an individual `gn desc` field for an action. The GN version pinned by Chromium does not provide that field through this form of the command, although the target exists. The pipeline stopped rather than treating the query failure as success. Source-level review of the pinned GN CLI also found that `gn check` takes at most one optional target label or pattern per invocation. The validation tooling has since been changed to inspect the **full JSON target description**, check exact labels, types, direct dependencies and declared outputs, and run a separate scoped dependency check for each controller. These changes have local regression coverage; they still require a new Windows GN-only workflow run before either downstream stage can be reported as passing. The workflow summary now names its combined gate **GN-ONLY**, while reporting `gn gen` separately, so a downstream failure cannot be mislabeled as a generation failure.
+The target query tried to display `type` as an individual `gn desc` field for an action. The GN version pinned by Chromium does not provide that field through this form of the command, although the target exists. The pipeline stopped rather than treating the query failure as success. Source-level review of the pinned GN CLI also found that `gn check` takes at most one optional target label or pattern per invocation. The validation tooling has since been changed to inspect the **full JSON target description**, check exact labels, types, direct dependencies and declared outputs, and run a separate scoped dependency check for each controller. These changes have local regression coverage. The workflow summary now names its combined gate **GN-ONLY**, while reporting `gn gen` separately, so a downstream failure cannot be mislabeled as a generation failure. The first run's failure remains a historical fact; the next run independently tested the correction.
+
+### Follow-up: complete GN-only validation
+
+[Windows Actions run 38130837908](https://github.com/ankworks/aurelia/actions/runs/38130837908) completed successfully on Aurelia commit `47f32400aa44d03846d763487a6d07f601b6ac61` against the same pinned Chromium revision. It reported:
+
+```text
+Done. Made 35817 targets from 5040 files in 17759ms
+Header dependency check OK
+Header dependency check OK
+PASS: GN-only validation completed (generation, target verification and scoped check); COMPILATION NOT TESTED.
+```
+
+In this **later** run, runner preparation, pinned synchronization, patch and overlay application, GN generation, effective arguments, exact Aurelia target-label/type/dependency/output verification, and separate scoped `gn check` invocations for both C++ controllers all **passed**. Free disk after GN generation was **188.5 GB**; GN generation consumed approximately **1.8 GB**, with **31.3 GB** consumed since pre-sync. These figures describe this observed runner, not a general requirement. The depot_tools global Git configuration recommendation was a warning, not the failing stage or a reason to allow uncontrolled updates.
+
+GN-only PASS means the selected build graph and scoped header dependency checks passed. It does **not** mean TypeScript, GRIT, C++ or Chromium browser compilation passed. The browser executable and runtime remain untested.
 
 ---
 
@@ -86,16 +101,16 @@ Successful GN generation shows that these declarations can be incorporated into 
 
 ## 🗺️ Next Milestones
 
-1. Re-run the Windows **GN-only** workflow on the current development branch. Require exact target-label/type/dependency/output inspection and scoped `gn check` to pass alongside `gn gen`; investigate any new failure without skipping a check.
-2. On a suitably provisioned builder, build the WebUI TypeScript and GRIT resources and verify the generated paks and maps.
-3. Compile both Aurelia C++ WebUI controller targets, then attempt a full Chromium browser build on an eligible runner.
-4. Package a complete Windows executable and its runtime dependencies only after a successful build. Launch it and separately record a browser smoke test for the Aurelia pages and security boundaries.
-5. Review build and runtime evidence before planning a first preview release. **No release date has been announced.**
+1. On a suitably provisioned builder, build the WebUI TypeScript and GRIT resources and verify the generated paks and maps. GN-only validation did not execute these actions.
+2. Compile both Aurelia C++ WebUI controller targets, then attempt a full Chromium browser build on an eligible runner.
+3. Package a complete Windows executable and its runtime dependencies only after a successful build. Launch it and separately record a browser smoke test for the Aurelia pages and security boundaries.
+4. Review build and runtime evidence before planning a first preview release. **No release date has been announced.**
 
 ---
 
 ## 🔗 Evidence and Further Reading
 
+- [Windows run 38130837908: complete GN-only validation PASS; no compilation](https://github.com/ankworks/aurelia/actions/runs/38130837908)
 - [Windows run 38128649838: first successful GN generation; target verification failed](https://github.com/ankworks/aurelia/actions/runs/38128649838)
 - [Earlier GN-only run 38126244950: New Tab WebUI configuration blocked GN generation](https://github.com/ankworks/aurelia/actions/runs/38126244950)
 - [Fast CI on the prior development head: repository and Windows bootstrap tests](https://github.com/ankworks/aurelia/actions/runs/38128496310)
@@ -103,7 +118,7 @@ Successful GN generation shows that these declarations can be incorporated into 
 - [Reviewed fork delta](../FORK-DELTA.md)
 - [Development Update #03](./UPDATE%2003.md)
 
-Repository checks and the local GN CLI compatibility probe are distinct from a full Windows Chromium build. As new validation runs complete, we will report their evidence separately rather than retroactively upgrading this run's result.
+Repository checks and the local GN CLI compatibility probe are distinct from both Windows runs. The later run validates GN-only; neither run is a full Windows Chromium build, and the first run's downstream failure has not been retroactively relabeled.
 
 ---
 
