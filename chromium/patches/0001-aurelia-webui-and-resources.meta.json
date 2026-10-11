@@ -5,7 +5,7 @@
   "patchSetVersion": "0.1.0",
   "baseRevision": "cfaadc5a132d78e1828635aa8405a499f3e14864",
   "baseVersion": "155.0.8059.40",
-  "sha256": "7035d77324218e8b81761d277b13112cd290343fe156d7575f4006477187e85d",
+  "sha256": "67a0f6c04d3d82d57dc538f30c79defa9573b61b052ae1bd99f562f24a688295",
   "generatedBy": "tools/chromium/generate-patch.mjs",
   "summary": {
     "filesModified": 8,
@@ -20,12 +20,12 @@
       "removed": 0,
       "hunks": 1,
       "component": "browser",
-      "reason": "Link the Aurelia WebUI controller into //chrome/browser.",
+      "reason": "Link the Aurelia WebUI controller only on non-Android builds.",
       "rebaseDifficulty": "trivial",
       "couldBecomeOverlay": false,
       "upstreamable": "no (Aurelia-specific)",
       "preImageSha256": "5c9a66b731954d1d28c7f630071880f0a879bfef924338362004b9ad19f4444b",
-      "postImageSha256": "2c0e662b3f29048c823f7d5224310bbd62f19a3c2a35a8ebfc2c68b3961d0c15"
+      "postImageSha256": "f441ddd23b727318bff7e1dbb47aec14fdc8b22a0ea16e06909c22c9f46f687c"
     },
     {
       "path": "chrome/browser/resources/BUILD.gn",

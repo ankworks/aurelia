@@ -1,16 +1,16 @@
 diff --git a/chrome/browser/BUILD.gn b/chrome/browser/BUILD.gn
-index b58905d..2e8adf8 100644
+index b58905d..007edd4 100644
 --- a/chrome/browser/BUILD.gn
 +++ b/chrome/browser/BUILD.gn
-@@ -2623,6 +2623,8 @@ source_set("browser") {
-       "//chrome/browser/ui/waap:window_metrics_manager",
-       "//chrome/browser/ui/web_applications:impl",
-       "//chrome/browser/ui/webui/app_service_internals",
+@@ -3338,6 +3338,8 @@ source_set("browser") {
+ 
+   if (!is_android) {
+     deps += [
 +      "//chrome/browser/ui/webui/aurelia",
 +      "//chrome/browser/ui/webui/newtab",
-       "//chrome/browser/ui/webui/autofill_ml_internals",
-       "//chrome/browser/ui/webui/color_pipeline_internals",
-       "//chrome/browser/ui/webui/commerce",
+       "//chrome/browser/contextual_cueing/internals",
+       "//chrome/browser/safe_browsing/suspicious_site_warnings",
+     ]
 diff --git a/chrome/browser/resources/BUILD.gn b/chrome/browser/resources/BUILD.gn
 index c76bba1..00fe904 100644
 --- a/chrome/browser/resources/BUILD.gn
