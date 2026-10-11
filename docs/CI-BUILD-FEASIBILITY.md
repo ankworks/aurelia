@@ -19,10 +19,10 @@ The optional `larger` input selects the label `windows-latest-8-cores`; an
 organization administrator must configure a GitHub-hosted Windows runner with
 that name. See [larger-runner specifications](https://docs.github.com/en/actions/reference/runners/larger-runners).
 
-| Runner choice                        | Published resources              | Expected outcome                                                                                                                                                                                      |
-| ------------------------------------ | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `standard` (`windows-2025`, default) | 4 vCPUs / 16 GB RAM / 14 GB SSD  | `gn` runs within the reduced GN-only profile (4 cores / 15.5 GB / 150 GB free). `targeted` and `full` are **BLOCKED** before Chromium source sync because they need the strict 8 / 32 / 150 minimums. |
-| `larger` (`windows-latest-8-cores`)  | 8 vCPUs / 32 GB RAM / 300 GB SSD | Proceeds only if the live measurement confirms at least 150 GB free on the exact Chromium destination volume and the required Windows toolchain is present.                                           |
+| Runner choice                        | Published resources              | Expected outcome                                                                                                                                                                                                                      |
+| ------------------------------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `standard` (`windows-2025`, default) | 4 vCPUs / 16 GB RAM / 14 GB SSD  | `gn` runs within the reduced GN-only profile (4 cores / 15.5 GB / 80 GB free, shallow `--no-history` checkout). `targeted` and `full` are **BLOCKED** before Chromium source sync because they need the strict 8 / 32 / 150 minimums. |
+| `larger` (`windows-latest-8-cores`)  | 8 vCPUs / 32 GB RAM / 300 GB SSD | Proceeds only if the live measurement confirms at least 150 GB free on the exact Chromium destination volume and the required Windows toolchain is present.                                                                           |
 
 Earlier runner experiments recorded different free-space totals on preinstalled
 Windows volumes (`219.9 GB` in run `38046646098` vs `147.0 GB` in run
@@ -37,9 +37,43 @@ database servers, and Chocolatey caches) while protecting Visual Studio, MSVC,
 Windows SDK, Git, Python, Node.js, and Rust, and provisions Windows SDK
 `10.0.28000.0` from Microsoft's Authenticode-verified installer before
 `tools/ci/check-builder.mjs` records the final CPU, RAM, architecture, Visual
-Studio installation, Windows SDK version, and free space for each run. It never
-lowers the existing 150 GB builder minimum or `10.0.28000.0` SDK requirement in
-order to force a sync.
+Studio installation, Windows SDK version, and free space for each run.
+
+### GN-only disk policy (M1.3)
+
+For GN-only validation (`validation_level=gn`) the pre-sync disk floor is
+**80 GB** (evidence-based), not 150 GB. Compilation modes (`targeted`, `full`)
+retain the unchanged 150 GB floor. The evidence supporting 80 GB for GN-only:
+
+| Component                                                         | Estimated size | Source                                                                                                                               |
+| ----------------------------------------------------------------- | -------------: | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `depot_tools` (pinned clone)                                      |        ~0.3 GB | git clone measurement                                                                                                                |
+| Chromium `src` working tree (pinned revision)                     |      ~12–15 GB | upstream Chromium source tree                                                                                                        |
+| DEPS / third_party working trees (~750 pinned repos)              |       ~8–12 GB | cl-shrink analysis of third_party                                                                                                    |
+| Shallow `.git` directories (`--no-history`, depth=1, ~750 repos)  |        ~3–5 GB | upstream `fetch --no-history` (~3.7 GB reported by Torne, 2020); cl-shrink measures dependency `.git` overhead at 40 GB with history |
+| GN generation artifacts (args.gn, ninja files, generated headers) |        ~1–2 GB | measured GN output size                                                                                                              |
+| **Subtotal (expected)**                                           |  **~25–35 GB** |                                                                                                                                      |
+| Safety reserve enforced during run                                |          10 GB | `config.buildRequirements.gnValidation.diskSafetyReserveGb`                                                                          |
+| **Pre-sync floor**                                                |      **80 GB** | Leaves ~45 GB headroom for hooks, temp files, and run-to-run variance                                                                |
+
+GN-only invokes `gclient sync --no-history` (shallow, depth=1 for every synced
+repo) per `fetch chromium --no-history` in the upstream Windows build
+instructions. Full-history clones are retained for `targeted`/`full` because
+incremental `gclient sync` and compilation need them. The 150 GB floor for
+compilation modes is never lowered and a GN PASS is never reported as a
+compiler PASS.
+
+Disk consumption is measured and recorded at four checkpoints (written to
+`artifacts/disk-measurements.json`):
+
+1. Before sync
+2. After gclient sync
+3. After patch/overlay application
+4. After `gn gen`
+
+The runtime disk reserve is also mode-aware: 10 GB for GN, 15 GB for
+compilation. The runner aborts (safely stops the process tree) if free disk
+falls below the reserve; it never removes protected system files.
 
 ## Runner storage topology (measured in run `38103342538`)
 
@@ -65,12 +99,13 @@ Windows SDK `10.0.28000.0` installation:
 | `C:\`  | 30.3 GB                | no                     |
 | `D:\`  | 147.0 GB (destination) | no                     |
 
-No volume on a standard `windows-2025` runner reaches 150 GB, so
-`runner-preflight` reports **BLOCKED** with those measurements instead of
-starting a Chromium sync. A GN pass therefore requires a GitHub-hosted Windows
-larger runner (`runner_size: larger`, label `windows-latest-8-cores`,
-8 vCPU / 32 GB RAM / 300 GB SSD) or another machine that satisfies the
-unchanged floor. The floor itself is deliberately not lowered.
+No volume on a standard `windows-2025` runner reaches 150 GB, so for
+`targeted` and `full` validation `runner-preflight` reports **BLOCKED** with
+those measurements instead of starting a Chromium sync. For GN-only
+validation, the D:\ destination volume (147.0 GB free) **does** meet the
+80 GB GN-mode floor, so GN-only (`gn / standard`) can proceed. The 150 GB
+floor for compilation modes is deliberately not lowered, and compilation on a
+standard runner is still blocked.
 
 `tools/chromium/prepare-runner.mjs` is therefore volume-aware:
 

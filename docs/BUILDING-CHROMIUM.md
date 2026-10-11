@@ -48,18 +48,25 @@ disk floor is enforced by `tools/chromium/sync.mjs`.
 Requirements are selected per validation level by `tools/ci/check-builder.mjs`
 (`requirementsForMode`) from `config/chromium_version.json`:
 
-| Level              | Logical cores | RAM     | Free disk on Chromium volume | Purpose                                                        |
-| ------------------ | ------------- | ------- | ---------------------------- | -------------------------------------------------------------- |
-| `gn`               | 4             | 15.5 GB | 150 GB                       | Sync, patch/overlay, `gn gen`, `gn check`. **No compilation.** |
-| `targeted`, `full` | 8             | 32 GB   | 150 GB                       | Adds WebUI resources, targeted C++, and (`full`) `chrome`.     |
+| Level              | Logical cores | RAM     | Free disk on Chromium volume | Purpose                                                                                 |
+| ------------------ | ------------- | ------- | ---------------------------- | --------------------------------------------------------------------------------------- |
+| `gn`               | 4             | 15.5 GB | 80 GB                        | Shallow (`--no-history`) sync, patch/overlay, `gn gen`, `gn check`. **No compilation.** |
+| `targeted`, `full` | 8             | 32 GB   | 150 GB                       | Adds WebUI resources, targeted C++, and (`full`) `chrome`. Full-history checkout.       |
 
 The `gn` profile is a reduced, GN-only profile. It exists because GN generation
-and dependency checking do not need the compile-time memory of a full build. The
-RAM value is 15.5 GB rather than 16 GB because the OS-reported total on a nominal
-16 GB machine can be slightly below 16. The 150 GB disk floor is kept for every
-level, and the 15 GB disk reserve and 1.5 GB RAM reserve are enforced during the
-run. `targeted` and `full` remain at the strict 8 / 32 / 150 gate and are never
-lowered.
+and dependency checking do not need the compile-time memory of a full build or a
+full-history checkout. The RAM value is 15.5 GB rather than 16 GB because the
+OS-reported total on a nominal 16 GB machine can be slightly below 16. The
+GN disk floor is 80 GB (evidence-based: see
+[CI-BUILD-FEASIBILITY.md](CI-BUILD-FEASIBILITY.md#gn-only-disk-policy-m13)),
+which fits on the measured 147 GB free of the windows-2025 D: volume. `gn` uses
+`gclient sync --no-history` (shallow, depth=1 for every synced repo) to keep
+the checkout footprint small; compilation modes require full history and the
+unchanged 150 GB floor.
+
+The runtime disk reserve is mode-aware: 10 GB for GN, 15 GB for compilation.
+The 1.5 GB RAM reserve is enforced during every run. `targeted` and `full`
+remain at the strict 8 / 32 / 150 gate and are never lowered.
 
 Under `gn`, the checkout uses at most **2** `gclient` sync jobs and the internal
 deadline is **240** minutes. `targeted` and `full` use four sync and Ninja jobs

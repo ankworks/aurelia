@@ -60,9 +60,24 @@ export const INTERNAL_DEADLINE_MINUTES = 330;
  */
 export const GN_DEADLINE_MINUTES = 240;
 export const GN_SYNC_JOBS = 2;
+/**
+ * Runtime disk reserve (GB) that must remain FREE at all times during the run.
+ * GN-only uses a smaller reserve (10 GB) because it produces no build artifacts;
+ * compilation modes keep the 15 GB reserve for object files, PDBs, and temp space.
+ */
+export const MINIMUM_DISK_RESERVE_GB_GN = 10;
 export const MINIMUM_DISK_RESERVE_GB = 15;
 export const MINIMUM_AVAILABLE_MEMORY_GB = 1.5;
 export const MAX_BROWSER_ARTIFACT_BYTES = 450 * 1024 ** 2;
+
+/**
+ * Return the runtime free-disk reserve for a validation mode.
+ * @param {string} mode
+ * @returns {number}
+ */
+export function diskReserveForMode(mode) {
+  return mode === 'gn' ? MINIMUM_DISK_RESERVE_GB_GN : MINIMUM_DISK_RESERVE_GB;
+}
 
 /**
  * These labels come from Aurelia's overlay BUILD.gn files and Chromium's
@@ -395,6 +410,23 @@ function makeSummary({
           '',
         ]
       : []),
+    ...(capabilities?.diskMeasurements
+      ? [
+          '## Disk consumption measurements',
+          '',
+          '| Stage | Free disk on destination volume |',
+          '| --- | ---: |',
+          `| Before sync | ${formatGb(capabilities.diskMeasurements.beforeSync)} |`,
+          `| After sync | ${formatGb(capabilities.diskMeasurements.afterSync)} |`,
+          `| After patch/overlay | ${formatGb(capabilities.diskMeasurements.afterPatch)} |`,
+          `| After gn gen | ${formatGb(capabilities.diskMeasurements.afterGnGen)} |`,
+          '',
+          capabilities.syncUsedShallow
+            ? '- Checkout strategy: shallow (`gclient sync --no-history`, depth=1 for every synced repo).'
+            : '- Checkout strategy: full history (required for incremental compilation).',
+          '',
+        ]
+      : []),
     '## Milestones',
     '',
     '| Milestone | Result | Evidence / reason |',
@@ -434,6 +466,8 @@ function writeSummary(context, overall, failure = null) {
         depotToolsRevision: context.config?.toolchain?.depotTools?.revision ?? null,
         milestones: milestoneVerdicts(context.stages, context.mode),
         stages: context.stages,
+        diskMeasurements: context.capabilities?.diskMeasurements ?? null,
+        syncUsedShallow: context.capabilities?.syncUsedShallow ?? null,
         failure,
         artifact: context.artifact,
       },
@@ -624,10 +658,15 @@ async function runCommandStage(context, {
   env,
   deadlineAt,
   verify,
+  minimumFreeDiskGb = null,
+  minimumAvailableMemoryGb = MINIMUM_AVAILABLE_MEMORY_GB,
 }) {
   setStage(context, id, 'RUNNING', 'Command in progress.');
   context.log(`\n=== ${label} ===`);
   const logPath = path.join(context.logsDir, `${id}.log`);
+  // Use the mode-specific free-disk reserve unless the caller overrides it.
+  const effectiveMinFreeDiskGb =
+    minimumFreeDiskGb !== null ? minimumFreeDiskGb : diskReserveForMode(context.mode);
   try {
     const result = await runMonitoredCommand({
       file,
@@ -640,6 +679,8 @@ async function runCommandStage(context, {
       usagePath: context.usagePath,
       deadlineAt,
       pollIntervalMs: context.pollIntervalMs,
+      minimumFreeDiskGb: effectiveMinFreeDiskGb,
+      minimumAvailableMemoryGb,
       quiet: context.quiet,
     });
     const evidence = verify ? await verify(result) : null;
@@ -1021,21 +1062,52 @@ export async function runValidation({
       NINJA_SUMMARIZE_BUILD: '1',
     };
 
+    const diskMeasurements = {
+      beforeSync: getDestFreeDiskGb(resolvedDest),
+      afterSync: null,
+      afterPatch: null,
+      afterGnGen: null,
+    };
+    context.capabilities.diskMeasurements = diskMeasurements;
+    log(`disk: before sync -> ${formatGb(diskMeasurements.beforeSync)} free on destination volume`);
+
+    const syncArgs = [
+      path.join(REPO_ROOT, 'tools/chromium/sync.mjs'),
+      '--dest',
+      resolvedDest,
+      '--mode',
+      mode,
+      '--jobs',
+      String(syncJobsForMode(mode)),
+    ];
+    // GN mode uses --no-history by default (see sync.mjs); compilation modes
+    // keep full history for incremental sync.
+
     await runCommandStage(context, {
       id: 'pinned-sync',
       label: 'Install pinned depot_tools and sync the configured Chromium revision',
       file: process.execPath,
-      args: [
-        path.join(REPO_ROOT, 'tools/chromium/sync.mjs'),
-        '--dest',
-        resolvedDest,
-        '--jobs',
-        String(syncJobsForMode(mode)),
-      ],
+      args: syncArgs,
       cwd: REPO_ROOT,
       env: childEnv,
+      minimumFreeDiskGb: diskReserveForMode(mode),
       deadlineAt,
       verify: () => {
+        diskMeasurements.afterSync = getDestFreeDiskGb(resolvedDest);
+        const consumedGb =
+          typeof diskMeasurements.beforeSync === 'number' &&
+          typeof diskMeasurements.afterSync === 'number'
+            ? Math.round(
+                (diskMeasurements.beforeSync - diskMeasurements.afterSync) * 10,
+              ) / 10
+            : null;
+        log(
+          `disk: after sync -> ${formatGb(diskMeasurements.afterSync)} free (consumed ${formatGb(consumedGb)})`,
+        );
+        writeFileSync(
+          path.join(resolvedArtifacts, 'disk-measurements.json'),
+          `${JSON.stringify(diskMeasurements, null, 2)}\n`,
+        );
         const actualDepotToolsRevision = captureCommand(
           {
             file: 'git',
@@ -1060,11 +1132,12 @@ export async function runValidation({
         assertPinnedRevision(config.chromium.revision, actualChromiumRevision);
         context.capabilities.actualDepotToolsRevision = actualDepotToolsRevision;
         context.capabilities.actualChromiumRevision = actualChromiumRevision;
+        context.capabilities.syncUsedShallow = mode === 'gn';
         writeFileSync(
           path.join(resolvedArtifacts, 'runner-capabilities.json'),
           `${JSON.stringify(context.capabilities, null, 2)}\n`,
         );
-        return `Chromium ${config.chromium.version} verified at ${actualChromiumRevision}; depot_tools verified at ${actualDepotToolsRevision}.`;
+        return `Chromium ${config.chromium.version} verified at ${actualChromiumRevision} (${mode === 'gn' ? 'shallow --no-history checkout' : 'full-history checkout'}); depot_tools verified at ${actualDepotToolsRevision}; consumed ${formatGb(consumedGb)}.`;
       },
     });
 
@@ -1095,6 +1168,24 @@ export async function runValidation({
       cwd: REPO_ROOT,
       env: childEnv,
       deadlineAt,
+      verify: () => {
+        diskMeasurements.afterPatch = getDestFreeDiskGb(resolvedDest);
+        const sinceSync =
+          typeof diskMeasurements.afterSync === 'number' &&
+          typeof diskMeasurements.afterPatch === 'number'
+            ? Math.round(
+                (diskMeasurements.afterSync - diskMeasurements.afterPatch) * 10,
+              ) / 10
+            : null;
+        log(
+          `disk: after patch/overlay -> ${formatGb(diskMeasurements.afterPatch)} free (patch/overlay consumed ${formatGb(sinceSync)})`,
+        );
+        writeFileSync(
+          path.join(resolvedArtifacts, 'disk-measurements.json'),
+          `${JSON.stringify(diskMeasurements, null, 2)}\n`,
+        );
+        return 'Aurelia overlay and patch applied; disk after patch recorded.';
+      },
     });
 
     await runCommandStage(context, {
@@ -1134,12 +1225,35 @@ export async function runValidation({
       args: ['gen', path.relative(srcDir, outDir), `--args=${renderedGnArgs}`],
       cwd: srcDir,
       env: childEnv,
+      minimumFreeDiskGb: diskReserveForMode(mode),
       deadlineAt,
       verify: () => {
         if (!existsSync(argsGn)) {
           throw new ValidationError('gn gen exited successfully but out/Aurelia/args.gn was not created', 'FAIL');
         }
-        return 'GN generated out/Aurelia/args.gn.';
+        diskMeasurements.afterGnGen = getDestFreeDiskGb(resolvedDest);
+        const gnConsumedGb =
+          typeof diskMeasurements.afterPatch === 'number' &&
+          typeof diskMeasurements.afterGnGen === 'number'
+            ? Math.round(
+                (diskMeasurements.afterPatch - diskMeasurements.afterGnGen) * 10,
+              ) / 10
+            : null;
+        const totalConsumed =
+          typeof diskMeasurements.beforeSync === 'number' &&
+          typeof diskMeasurements.afterGnGen === 'number'
+            ? Math.round(
+                (diskMeasurements.beforeSync - diskMeasurements.afterGnGen) * 10,
+              ) / 10
+            : null;
+        log(
+          `disk: after gn gen -> ${formatGb(diskMeasurements.afterGnGen)} free (GN consumed ${formatGb(gnConsumedGb)}; total consumed ${formatGb(totalConsumed)})`,
+        );
+        writeFileSync(
+          path.join(resolvedArtifacts, 'disk-measurements.json'),
+          `${JSON.stringify(diskMeasurements, null, 2)}\n`,
+        );
+        return `GN generated out/Aurelia/args.gn. Total disk consumed through GN gen: ${formatGb(totalConsumed)}.`;
       },
     });
 

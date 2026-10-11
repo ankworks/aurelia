@@ -1474,10 +1474,12 @@ export function prepareHostedWindowsRunner({
   dest,
   artifacts = null,
   minimumFreeDiskGb = MINIMUM_PRE_SYNC_FREE_DISK_GB,
-  targetCleanupFreeDiskGb = Math.max(
-    minimumFreeDiskGb + 15,
-    TARGET_CLEANUP_FREE_DISK_GB,
-  ),
+  // SDK installation writes to C:\ (Windows Kits), not the destination volume,
+  // so we only need a small buffer over minimumFreeDiskGb on the destination.
+  // Keep the 165 GB target when the caller requests the reference 150 GB floor,
+  // so existing targeted/full behavior is unchanged; for smaller floors (GN-only)
+  // add a flat 5 GB buffer for temp files and runhooks scratch space.
+  targetCleanupFreeDiskGb = null,
   env = process.env,
   platform = process.platform,
   exists = existsSync,
@@ -1505,6 +1507,16 @@ export function prepareHostedWindowsRunner({
       problems: [],
     };
   }
+
+  // Resolve the target cleanup free-disk floor based on the requested minimum:
+  //  - reference 150 GB floor (targeted/full): keep TARGET_CLEANUP_FREE_DISK_GB (165 GB)
+  //  - GN-only floor (80 GB): minimum + 5 GB buffer for temp/hooks scratch
+  const effectiveTargetCleanup =
+    targetCleanupFreeDiskGb !== null
+      ? targetCleanupFreeDiskGb
+      : minimumFreeDiskGb >= MINIMUM_PRE_SYNC_FREE_DISK_GB
+        ? TARGET_CLEANUP_FREE_DISK_GB
+        : minimumFreeDiskGb + 5;
 
   const initialToolchain = detectWindowsToolchain({
     env,
@@ -1540,7 +1552,7 @@ export function prepareHostedWindowsRunner({
 
   const needsSdkProvisioning = !before.windowsSdkCompatible;
   const diskThresholdForCleanup = needsSdkProvisioning
-    ? targetCleanupFreeDiskGb
+    ? effectiveTargetCleanup
     : minimumFreeDiskGb;
   const needsDiskCleanup =
     freeDiskBeforeGb === null || freeDiskBeforeGb < diskThresholdForCleanup;
@@ -1563,7 +1575,7 @@ export function prepareHostedWindowsRunner({
   if (needsDiskCleanup) {
     cleanup = reclaimHostedRunnerDisk({
       dest,
-      targetFreeDiskGb: targetCleanupFreeDiskGb,
+      targetFreeDiskGb: effectiveTargetCleanup,
       env,
       platform,
       visualStudioPath: before.visualStudio,

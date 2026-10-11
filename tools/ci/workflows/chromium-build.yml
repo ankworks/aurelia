@@ -2,7 +2,8 @@ name: Chromium build validation
 
 # Manual only. Every run is measured first and is not allowed to start a Chromium
 # sync unless it meets the minimum for its validation level:
-#   gn                -> reduced GN-only profile (4 cores, 15.5 GB RAM, 150 GB disk).
+#   gn                -> reduced GN-only profile (4 cores, 15.5 GB RAM, 80 GB disk,
+#                        gclient --no-history shallow checkout).
 #                        Runs GN generation and gn check; never compiles.
 #   targeted / full   -> strict reference builder (8 cores, 32 GB RAM, 150 GB disk).
 #                        A standard runner is BLOCKED before sync for these levels.
