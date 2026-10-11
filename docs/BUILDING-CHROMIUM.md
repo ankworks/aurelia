@@ -149,6 +149,12 @@ The browser artifact is unsigned development output. No release is published,
 no signing secrets are used, and no security feature is weakened to make CI pass.
 The workflow does not run a smoke test or claim the browser is tested.
 
+## Pinned Windows `depot_tools` Python bootstrap before GN
+
+At the configured depot_tools revision `1e43ae345913614898e3d6a1ef2680a0d47574e9`, `gn.bat` calls `python-bin/python3.bat gn.py`; `python-bin/python3.bat` refuses to run without `python3_bin_reldir.txt`. That pointer is intentionally Git-ignored, not part of the pinned checkout. `bootstrap/win_tools.bat` installs the Python version from the checked-out `bootstrap/manifest.txt` via CIPD and runs `bootstrap/bootstrap.py`, which generates the pointer and the versioned Python executable. The pinned source can be inspected at [the exact commit in the Chromium full mirror](https://github.com/chromium-full-mirror/chromium_tools_depot_tools/tree/1e43ae345913614898e3d6a1ef2680a0d47574e9).
+
+With `DEPOT_TOOLS_UPDATE=0`, `gclient.bat` skips `update_depot_tools.bat`, so `gclient sync` can pass without this GN prerequisite. **Do not** enable the updater: it checks out the moving `origin/main`. The validation driver instead runs `tools/chromium/bootstrap-depot-tools.mjs` after the GN argument policy check and before GN generation. It checks the depot_tools HEAD before and after calling only the pinned `bootstrap/win_tools.bat`, forces `DEPOT_TOOLS_UPDATE=0`, and verifies the generated pointer and Python executable. CIPD installs the version specified by the pinned manifest; no depot_tools Git ref is fetched or updated. A bootstrap failure stops validation; the GN policy, `gn gen`, effective arguments, target labels, and `gn check` are never bypassed.
+
 ## The Windows `git.bat` shim
 
 `depot_tools/git_cache.py` hard-codes the git program name for Windows:

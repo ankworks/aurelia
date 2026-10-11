@@ -106,6 +106,7 @@ export const COMPILE_STAGE_IDS = Object.freeze([
 /** Stages that prove GN configuration without compiling anything. */
 export const GN_STAGE_IDS = Object.freeze([
   'gn-argument-policy',
+  'depot-tools-bootstrap',
   'gn-generation',
   'gn-effective-arguments',
   'target-labels',
@@ -172,7 +173,7 @@ export function milestoneVerdicts(stages, mode) {
       key: 'gn-gen',
       text: text('GN GEN', gn),
       status: gn,
-      detail: 'GN policy, gn gen, effective arguments, target labels, and gn check.',
+      detail: 'GN policy, pinned depot_tools bootstrap, gn gen, effective arguments, target labels, and gn check.',
     },
     {
       key: 'compilation',
@@ -1216,6 +1217,26 @@ export async function runValidation({
       path.join(context.logsDir, 'gn-arguments.log'),
     );
     writeFileSync(path.join(resolvedArtifacts, 'gn-arguments.txt'), `${renderedGnArgs}\n`);
+
+    // gclient.bat skips update_depot_tools.bat with DEPOT_TOOLS_UPDATE=0.
+    // Initialize the checked-out Windows Python via its standalone bootstrap,
+    // not the updater (which would check out moving origin/main). gn.bat needs
+    // python3_bin_reldir.txt even though gclient sync itself already passed.
+    if (process.platform === 'win32') {
+      await runCommandStage(context, {
+        id: 'depot-tools-bootstrap',
+        label: 'Initialize pinned depot_tools Python for GN without updating Git',
+        file: process.execPath,
+        args: [
+          path.join(REPO_ROOT, 'tools/chromium/bootstrap-depot-tools.mjs'),
+          toolsDir,
+          config.toolchain.depotTools.revision,
+        ],
+        cwd: REPO_ROOT,
+        env: childEnv,
+        deadlineAt,
+      });
+    }
 
     const argsGn = path.join(outDir, 'args.gn');
     await runCommandStage(context, {

@@ -167,6 +167,7 @@ describe('hosted Chromium validation configuration', () => {
     const execution = DRIVER.slice(start, end);
     const markers = [
       "id: 'gn-argument-policy'",
+      "id: 'depot-tools-bootstrap'",
       "id: 'gn-generation'",
       "id: 'gn-effective-arguments'",
       "setStage(context, 'target-labels', 'RUNNING'",
@@ -374,6 +375,20 @@ describe('GN-only validation on the standard runner', () => {
       'GN GEN PASS',
       'COMPILATION NOT TESTED',
     ]);
+  });
+
+  it('does not claim GN passed when the depot_tools bootstrap failed', () => {
+    const stages = {
+      ...passing(['gn-argument-policy']),
+      'depot-tools-bootstrap': {
+        status: 'FAIL',
+        details: 'Python pointer missing',
+      },
+    };
+    expect(milestoneVerdicts(stages, 'gn')[2]).toMatchObject({
+      text: 'GN GEN FAIL',
+      status: 'FAIL',
+    });
   });
 
   it('never reports GN or compilation as passed when a GN stage failed', () => {
