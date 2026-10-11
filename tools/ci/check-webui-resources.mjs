@@ -61,6 +61,15 @@ export function checkWebUIResources({
       ].map((match) => match[1]);
     const staticFiles = list('static_files');
     const tsFiles = list('ts_files');
+    // At the Chromium 155 pin, build_webui.gni only consumes
+    // invoker.webui_context_type inside if (defined(invoker.ts_deps)). Without
+    // ts_deps GN rejects the assignment before any resource target is built.
+    // The dependency also generates trusted chrome:// TypeScript path mappings;
+    // it does not change the controller's runtime origin or CSP.
+    require(list('ts_deps').includes('//ui/webui/resources/js:build_ts') &&
+      /\bwebui_context_type\s*=\s*"trusted"/.test(
+        gn,
+      ), `${dir}: trusted WebUI TypeScript mapping requires ts_deps`);
     require(staticFiles.includes(html) &&
       tsFiles.length > 0, `${dir}: missing HTML/TypeScript input`);
     for (const file of [...staticFiles, ...tsFiles]) {
