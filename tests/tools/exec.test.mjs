@@ -151,8 +151,15 @@ describe('running and capturing', () => {
       args: [],
       cwd: process.cwd(),
     });
-    expect(result.error).toBeDefined();
-    expect(result.status).toBeNull();
+    if (process.platform === 'win32') {
+      // cmd.exe starts successfully, but reports the missing command itself.
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+    } else {
+      // POSIX attempts to spawn the missing executable directly.
+      expect(result.error).toBeDefined();
+      expect(result.status).toBeNull();
+    }
   });
 });
 
