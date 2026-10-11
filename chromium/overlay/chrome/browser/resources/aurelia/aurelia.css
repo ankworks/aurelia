@@ -77,7 +77,7 @@ aurelia-status-card {
 /* Blur is opt-in via the root attribute set from the appearance.transparency
  * preference, and only where the compositor can afford it. */
 @supports (backdrop-filter: blur(1px)) {
-  :root[data-aurelia-transparency="on"] aurelia-status-card {
+  :root[data-aurelia-transparency='on'] aurelia-status-card {
     backdrop-filter: blur(var(--aurelia-effect-blur));
   }
 }
