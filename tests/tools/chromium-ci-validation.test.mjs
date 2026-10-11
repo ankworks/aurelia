@@ -225,9 +225,18 @@ describe('pinned Chromium target and resource validation', () => {
     ).toThrow('refusing to continue');
   });
 
-  it('bounds sync concurrency and preserves the fixed 150 GB disk gate', () => {
+  it('bounds sync concurrency and exposes mode-aware disk floors', () => {
     expect(MAX_BUILD_JOBS).toBe(4);
+    // Default (no mode/full) keeps the reference 150 GB floor.
     expect(diskFloorGb()).toBe(150);
+    // targeted/full keep the unchanged 150 GB reference floor.
+    expect(diskFloorGb({ config: loadConfig(), mode: 'full' })).toBe(150);
+    expect(diskFloorGb({ config: loadConfig(), mode: 'targeted' })).toBe(150);
+    // gn uses a mode-specific floor read from config.
+    const gnFloor = diskFloorGb({ config: loadConfig(), mode: 'gn' });
+    expect(gnFloor).toBeLessThan(150);
+    expect(gnFloor).toBeGreaterThanOrEqual(50);
+    // gclient sync args include --no-history when requested (GN mode default).
     expect(
       gclientSyncArgs({
         revision: 'cfaadc5a132d78e1828635aa8405a499f3e14864',
@@ -239,6 +248,20 @@ describe('pinned Chromium target and resource validation', () => {
       '4',
       '--revision',
       'src@cfaadc5a132d78e1828635aa8405a499f3e14864',
+    ]);
+    expect(
+      gclientSyncArgs({
+        revision: 'cfaadc5a132d78e1828635aa8405a499f3e14864',
+        jobs: 2,
+        noHistory: true,
+      }),
+    ).toEqual([
+      'sync',
+      '--jobs',
+      '2',
+      '--revision',
+      'src@cfaadc5a132d78e1828635aa8405a499f3e14864',
+      '--no-history',
     ]);
     expect(() => gclientSyncArgs({ revision: 'bad', jobs: 0 })).toThrow(
       '--jobs must be an integer',

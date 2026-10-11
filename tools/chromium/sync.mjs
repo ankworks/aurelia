@@ -59,11 +59,36 @@ import { isMainModule } from '../lib/entry.mjs';
 const CHROMIUM_SOURCE_URL =
   'https://chromium.googlesource.com/chromium/src.git';
 
-/** Minimum free space in GB before we even try: source + deps + build output. */
+/**
+ * Reference free-disk floor for compilation modes (targeted/full).
+ *
+ * Kept at 150 GB as required. GN-only validation uses its own mode-specific
+ * floor read from config.buildRequirements.gnValidation.freeDiskGb (see
+ * config/chromium_version.json). The two are kept separate so GN-only
+ * validation can run on a standard GitHub-hosted Windows runner (~147 GB free)
+ * while compilation modes retain the unchanged 150 GB gate.
+ */
 export const MINIMUM_FREE_DISK_GB = 150;
 
-/** The pinned checkout always requires the reviewed 150 GB free-disk floor. */
-export function diskFloorGb() {
+/**
+ * Return the pre-sync free-disk floor for the given validation mode.
+ *
+ * - `gn` uses config.buildRequirements.gnValidation.freeDiskGb (GN-only
+ *   shallow checkout, no compilation, smaller footprint).
+ * - `targeted` and `full` use the unchanged reference 150 GB floor.
+ *
+ * @param {object} [options]
+ * @param {object} [options.config] Loaded Chromium configuration.
+ * @param {string} [options.mode] Validation mode ('gn' | 'targeted' | 'full').
+ * @returns {number}
+ */
+export function diskFloorGb({ config, mode = 'full' } = {}) {
+  if (mode === 'gn') {
+    const gnFloor = config?.buildRequirements?.gnValidation?.freeDiskGb;
+    if (typeof gnFloor === 'number' && Number.isFinite(gnFloor) && gnFloor > 0) {
+      return gnFloor;
+    }
+  }
   return MINIMUM_FREE_DISK_GB;
 }
 
@@ -104,7 +129,12 @@ export function gclientExecutable(depotTools) {
 }
 
 /** Build the exact gclient arguments, with bounded sync concurrency if set. */
-export function gclientSyncArgs({ revision, withRefs = false, jobs = null } = {}) {
+export function gclientSyncArgs({
+  revision,
+  withRefs = false,
+  noHistory = false,
+  jobs = null,
+} = {}) {
   if (jobs !== null && (!Number.isInteger(jobs) || jobs < 1 || jobs > 32)) {
     throw new Error('--jobs must be an integer from 1 through 32');
   }
@@ -113,6 +143,13 @@ export function gclientSyncArgs({ revision, withRefs = false, jobs = null } = {}
     args.push('--jobs', String(jobs));
   }
   args.push('--revision', `src@${revision}`);
+  if (noHistory) {
+    // Shallow clone: depth=1 for every synced repo. Reduces checkout size from
+    // tens of gigabytes (full history) to the working tree plus a small
+    // shallow pack. Chromium's own fetch --no-history uses this flag; see
+    // https://chromium.googlesource.com/chromium/src/+/main/docs/windows_build_instructions.md
+    args.push('--no-history');
+  }
   if (withRefs) {
     args.push('--with_branch_heads', '--with_tags');
   }
@@ -233,6 +270,7 @@ export function toolingDiagnostics({
 export function preflight({
   dest,
   config,
+  mode = 'full',
   env = process.env,
   platform = process.platform,
   spawn = spawnSync,
@@ -241,7 +279,7 @@ export function preflight({
 }) {
   const reports = [];
   const problems = [];
-  const floorGb = diskFloorGb();
+  const floorGb = diskFloorGb({ config, mode });
 
   let probePath = dest;
   while (!existsSync(probePath) && probePath !== path.dirname(probePath)) {
@@ -377,11 +415,13 @@ export function syncCheckout({
   dest,
   install = false,
   withRefs = false,
+  noHistory = false,
   jobs = null,
+  mode = 'full',
   config,
   log = console.log,
 }) {
-  const preflightResult = preflight({ dest, config });
+  const preflightResult = preflight({ dest, config, mode });
   for (const report of preflightResult.reports) {
     log(`preflight: ${report}`);
   }
@@ -429,6 +469,7 @@ export function syncCheckout({
   const syncArgs = gclientSyncArgs({
     revision: config.chromium.revision,
     withRefs,
+    noHistory,
     jobs,
   });
   // Streamed, not captured: a sync takes tens of minutes and writes progress
@@ -495,7 +536,7 @@ function main(argv) {
   }
 
   if (argv.includes('--low-resource-experiment')) {
-    throw new Error('LOW_RESOURCE_EXPERIMENT is retired; Chromium sync always requires 150 GB free disk');
+    throw new Error('LOW_RESOURCE_EXPERIMENT is retired; Chromium sync requires the documented free-disk floor (see config/chromium_version.json buildRequirements)');
   }
 
   const dest = valueOf('--dest') ?? process.env.AURELIA_CHROMIUM_DEST;
@@ -506,9 +547,22 @@ function main(argv) {
     throw new Error('--jobs requires a number from 1 through 32');
   }
   const jobs = parseJobs(valueOf('--jobs'));
+  const mode = valueOf('--mode') ?? 'full';
+  if (!['gn', 'targeted', 'full'].includes(mode)) {
+    throw new Error(`invalid --mode "${mode}"; choose gn, targeted, or full`);
+  }
+  // GN-only validation uses --no-history by default to reduce checkout size
+  // (shallow depth=1 for every repo). Compilation modes retain full history
+  // so incremental gclient sync works correctly.
+  const defaultNoHistory = mode === 'gn';
+  const noHistory = argv.includes('--no-history')
+    ? true
+    : argv.includes('--with-history')
+      ? false
+      : defaultNoHistory;
 
   if (argv.includes('--check-only')) {
-    const preflightResult = preflight({ dest, config });
+    const preflightResult = preflight({ dest, config, mode });
     for (const report of preflightResult.reports) {
       console.log(`preflight: ${report}`);
     }
@@ -522,7 +576,9 @@ function main(argv) {
     dest,
     install: argv.includes('--install'),
     withRefs: argv.includes('--with-refs'),
+    noHistory,
     jobs,
+    mode,
     config,
   });
   console.log(`ready: ${result.srcDir} at ${result.head}`);

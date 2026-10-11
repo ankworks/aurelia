@@ -85,14 +85,18 @@ function tempDest() {
 
 describe('validation-mode resource profiles', () => {
   const config = loadConfig();
+  const GN_FLOOR_GB = config.buildRequirements.gnValidation.freeDiskGb;
+  const REFERENCE_FLOOR_GB =
+    config.buildRequirements.referenceBuilder.freeDiskGb;
 
-  it('gives gn its reduced profile and keeps targeted and full strict', () => {
-    expect(requirementsForMode(config, 'gn')).toEqual({
+  it('gives gn its reduced profile (4 cores / 15.5 GB RAM / GN-mode disk floor) and keeps targeted/full at the strict 150 GB reference', () => {
+    expect(requirementsForMode(config, 'gn')).toMatchObject({
       cpuCores: 4,
       ramGb: 15.5,
-      freeDiskGb: 150,
-      notes: config.buildRequirements.gnValidation.notes,
+      freeDiskGb: GN_FLOOR_GB,
     });
+    expect(GN_FLOOR_GB).toBeLessThan(REFERENCE_FLOOR_GB);
+    expect(GN_FLOOR_GB).toBeGreaterThanOrEqual(50);
     for (const mode of ['targeted', 'full']) {
       expect(requirementsForMode(config, mode)).toMatchObject({
         cpuCores: 8,
@@ -110,7 +114,7 @@ describe('validation-mode resource profiles', () => {
       requirementsForMode(
         {
           buildRequirements: {
-            gnValidation: { cpuCores: '4', ramGb: 16, freeDiskGb: 150 },
+            gnValidation: { cpuCores: '4', ramGb: 16, freeDiskGb: 80 },
           },
         },
         'gn',
@@ -118,7 +122,7 @@ describe('validation-mode resource profiles', () => {
     ).toThrow('gnValidation.cpuCores must be a positive number');
   });
 
-  it('passes the measured standard runner under gn and blocks it under targeted and full', () => {
+  it('passes the measured standard runner (4 cores / 16 GB / 219.9 GB) under gn and blocks it under targeted and full', () => {
     expect(
       evaluateResources(STANDARD_RUNNER, requirementsForMode(config, 'gn')),
     ).toEqual([]);
@@ -137,19 +141,24 @@ describe('validation-mode resource profiles', () => {
   it('keeps gn blocked below its own floors', () => {
     const gn = requirementsForMode(config, 'gn');
     expect(
-      evaluateResources({ cpuCores: 2, ramGb: 8, bestFreeDiskGb: 100 }, gn),
+      evaluateResources(
+        { cpuCores: 2, ramGb: 8, bestFreeDiskGb: GN_FLOOR_GB - 1 },
+        gn,
+      ),
     ).toEqual([
       'logical cores: 2 (needs 4+)',
       'RAM: 8 GB (needs 15.5 GB+)',
-      expect.stringContaining('free disk: 100 GB (needs 150 GB+'),
+      expect.stringContaining(
+        `free disk: ${GN_FLOOR_GB - 1} GB (needs ${GN_FLOOR_GB} GB+`,
+      ),
     ]);
     expect(
       evaluateResources({ cpuCores: 4, ramGb: 15, bestFreeDiskGb: 219.9 }, gn),
     ).toEqual(['RAM: 15 GB (needs 15.5 GB+)']);
   });
 
-  it('preserves the 150 GB disk floor in every mode', () => {
-    for (const mode of ['gn', 'targeted', 'full']) {
+  it('preserves the 150 GB disk floor for targeted/full compilation modes (never lowered)', () => {
+    for (const mode of ['targeted', 'full']) {
       const problems = evaluateResources(
         { cpuCores: 8, ramGb: 32, bestFreeDiskGb: 149.9 },
         requirementsForMode(config, mode),
@@ -158,6 +167,23 @@ describe('validation-mode resource profiles', () => {
         /free disk: 149.9 GB \(needs 150 GB\+/,
       );
     }
+  });
+
+  it('keeps gn blocked below its own (lower) GN-mode disk floor but allows it at 147 GB (the measured free space on windows-2025)', () => {
+    const gn = requirementsForMode(config, 'gn');
+    // 147 GB free (the real windows-2025 D:\ volume after SDK install) must
+    // pass the GN disk floor so GN-only validation can proceed.
+    expect(
+      evaluateResources({ cpuCores: 4, ramGb: 16, bestFreeDiskGb: 147.0 }, gn),
+    ).toEqual([]);
+    // Below the GN floor, GN is blocked.
+    const problems = evaluateResources(
+      { cpuCores: 4, ramGb: 16, bestFreeDiskGb: GN_FLOOR_GB - 0.1 },
+      gn,
+    );
+    expect(problems.join(';')).toMatch(
+      new RegExp(`free disk: .*\\(needs ${GN_FLOOR_GB} GB\\+`),
+    );
   });
 
   it('records the validation mode and its profile in the verdict', () => {
@@ -173,7 +199,7 @@ describe('validation-mode resource profiles', () => {
     expect(result.requirements).toMatchObject({
       cpuCores: 4,
       ramGb: 15.5,
-      freeDiskGb: 150,
+      freeDiskGb: GN_FLOOR_GB,
     });
   });
 });
