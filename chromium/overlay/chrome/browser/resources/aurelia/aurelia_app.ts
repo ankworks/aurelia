@@ -150,7 +150,7 @@ export class AureliaAppElement extends HTMLElement {
 
     const palette = document.createElement('aurelia-command-palette');
     palette.setAttribute('data-opener', opener.id);
-    this.palette = palette as AureliaCommandPaletteElement;
+    this.palette = palette;
     this.appendChild(palette);
     document.addEventListener('keydown', this.onKeydown);
 
