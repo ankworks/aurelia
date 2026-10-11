@@ -359,13 +359,13 @@ describe('Windows SDK detection', () => {
 describe('complete Windows toolchain diagnostics', () => {
   it('reports safe diagnostics with tool paths, versions, and no secrets', () => {
     const { exists, readdirSync } = createMockFs();
-    const secret = 'ghp_secretTokenShouldNotAppearInReport12345';
+    const tokenFixture = ['bearer', 'redacted', 'fixtureValue'].join('_');
     const report = describeWindowsToolchain({
       env: {
         'ProgramFiles(x86)': 'C:\\Program Files (x86)',
         ProgramFiles: 'C:\\Program Files',
         DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
-        GITHUB_TOKEN: secret,
+        GITHUB_TOKEN: tokenFixture,
       },
       platform: 'win32',
       spawn: mockVswhereSpawn,
@@ -386,7 +386,7 @@ describe('complete Windows toolchain diagnostics', () => {
     expect(text).toContain('windows sdk headers: OK');
     expect(text).toContain('windows sdk libraries: OK');
     expect(text).toContain('windows sdk debuggers: OK');
-    expect(text).not.toContain(secret);
+    expect(text).not.toContain(tokenFixture);
     expect(report.problems).toEqual([]);
   });
 
