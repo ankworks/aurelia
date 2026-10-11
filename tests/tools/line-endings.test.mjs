@@ -16,8 +16,10 @@
  * conversion `actions/checkout` performs on the runner.
  */
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   cpSync,
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -48,16 +50,41 @@ function git(args) {
   return execFileSync('git', args, { encoding: 'utf8' });
 }
 
-const scratch = [];
-afterAll(() => {
-  for (const directory of scratch.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+const scratch = new Set();
+
+/**
+ * Remove a scratch tree without turning a teardown race into a test failure.
+ * `maxRetries` makes Node retry the ENOTEMPTY case, which happens when a git
+ * process still has a handle in `.git` while the tree is being deleted.
+ */
+function safeRemove(directory) {
+  try {
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 50,
+    });
+  } catch (error) {
+    if (existsSync(directory)) throw error;
   }
+}
+
+afterAll(() => {
+  for (const directory of scratch) safeRemove(directory);
+  scratch.clear();
 });
 
 function makeTemp(prefix) {
   const directory = mkdtempSync(path.join(tmpdir(), prefix));
-  scratch.push(directory);
+  scratch.add(directory);
+  return directory;
+}
+
+/** A scratch path that does not exist yet (for `git clone` destinations). */
+function tempPath(prefix) {
+  const directory = path.join(tmpdir(), `${prefix}${randomUUID()}`);
+  scratch.add(directory);
   return directory;
 }
 
@@ -65,13 +92,14 @@ describe('a Windows-style checkout (core.autocrlf=true)', () => {
   /** Build a tiny repository, then clone it the way a Windows runner checks out. */
   function cloneFixture({ autocrlf, attributes }) {
     const source = makeTemp('aurelia-eol-source-');
-    const destination = makeTemp('aurelia-eol-clone-');
-    rmSync(destination, { recursive: true, force: true });
-    scratch.push(destination);
+    const destination = tempPath('aurelia-eol-clone-');
 
     git(['init', '--quiet', source]);
     git(['-C', source, 'config', 'user.email', 'test@aurelia.invalid']);
     git(['-C', source, 'config', 'user.name', 'Aurelia Test']);
+    // Same setting actions/checkout applies, and the reason is the same: keep
+    // git's own housekeeping out of the way of whatever runs next.
+    git(['-C', source, 'config', 'gc.auto', '0']);
     if (attributes !== undefined) {
       writeFileSync(path.join(source, '.gitattributes'), attributes);
     }
@@ -131,12 +159,11 @@ describe('a Windows-style checkout (core.autocrlf=true)', () => {
     git(['init', '--quiet', source]);
     git(['-C', source, 'config', 'user.email', 'test@aurelia.invalid']);
     git(['-C', source, 'config', 'user.name', 'Aurelia Test']);
+    git(['-C', source, 'config', 'gc.auto', '0']);
     git(['-C', source, 'add', '--all']);
     git(['-C', source, 'commit', '--quiet', '--message', 'working tree']);
 
-    const destination = makeTemp('aurelia-eol-repo-clone-');
-    rmSync(destination, { recursive: true, force: true });
-    scratch.push(destination);
+    const destination = tempPath('aurelia-eol-repo-clone-');
     git([
       '-c',
       'core.autocrlf=true',
