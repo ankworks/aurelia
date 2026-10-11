@@ -47,6 +47,7 @@ jobs:
       AURELIA_VALIDATION_LEVEL: ${{ inputs.validation_level || 'gn' }}
       AURELIA_RUNNER_SIZE: ${{ inputs.runner_size || 'standard' }}
       DEPOT_TOOLS_UPDATE: '0'
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0'
       GCLIENT_PY3: '1'
       NINJA_SUMMARIZE_BUILD: '1'
       GIT_TERMINAL_PROMPT: '0'

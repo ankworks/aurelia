@@ -26,7 +26,14 @@
  *   node tools/chromium/sync.mjs --dest C:\\chromium --with-refs   # + branch heads/tags
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statfsSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 import { REPO_ROOT, loadConfig, CONFIG_PATH } from './lib/config.mjs';
@@ -43,6 +50,10 @@ import {
   resolvesInPathEntries,
   whereExecutable,
 } from './lib/windows-git.mjs';
+import {
+  describeWindowsToolchain,
+  detectWindowsToolchain,
+} from './lib/windows-toolchain.mjs';
 import { isMainModule } from '../lib/entry.mjs';
 
 const CHROMIUM_SOURCE_URL =
@@ -138,7 +149,10 @@ export function toolingDiagnostics({
   windowsGit = null,
   spawn = spawnSync,
   exists = existsSync,
+  readdir = readdirSync,
+  readdirSync: readdirOpt,
 } = {}) {
+  const dirReader = readdirOpt ?? readdir;
   const lines = [];
   const problems = [];
   const entries = pathEntries(env, platform);
@@ -203,6 +217,16 @@ export function toolingDiagnostics({
       : `PATH entries containing "git": ${gitEntries.join('; ')}`,
   );
 
+  const toolchainDesc = describeWindowsToolchain({
+    env,
+    platform,
+    spawn,
+    exists,
+    readdirSync: dirReader,
+  });
+  lines.push(...toolchainDesc.lines);
+  problems.push(...toolchainDesc.problems);
+
   return { lines, problems };
 }
 
@@ -213,6 +237,7 @@ export function preflight({
   platform = process.platform,
   spawn = spawnSync,
   exists = existsSync,
+  readdir = readdirSync,
 }) {
   const reports = [];
   const problems = [];
@@ -267,6 +292,30 @@ export function preflight({
         ? `git.bat is not on PATH; depot_tools git_cache.py runs "git.bat" (not "git") on Windows, so a shim is created in ${GIT_SHIM_DIR_NAME} before gclient starts`
         : `git.bat: ${gitBat}`,
     );
+  }
+
+  if (platform === 'win32') {
+    const toolchain = detectWindowsToolchain({
+      env,
+      platform,
+      spawn,
+      exists,
+      readdirSync: readdir,
+    });
+    if (toolchain !== null) {
+      if (toolchain.problems.length > 0) {
+        problems.push(...toolchain.problems);
+      }
+      for (const line of describeWindowsToolchain({
+        env,
+        platform,
+        spawn,
+        exists,
+        readdirSync: readdir,
+      }).lines) {
+        reports.push(`toolchain: ${line}`);
+      }
+    }
   }
 
   return { reports, problems };
@@ -356,6 +405,7 @@ export function syncCheckout({
   const env = {
     ...withPathPrefix(process.env, depotTools, windowsGit?.directory),
     DEPOT_TOOLS_UPDATE: '0',
+    DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
     GCLIENT_PY3: '1',
   };
 

@@ -138,6 +138,8 @@ describe('hosted Chromium validation configuration', () => {
       "runs-on: ${{ inputs.runner_size == 'larger' && 'windows-latest-8-cores' || 'windows-2025' }}",
     );
     expect(WORKFLOW).toContain('permissions:\n  contents: read');
+    expect(WORKFLOW).toContain("DEPOT_TOOLS_WIN_TOOLCHAIN: '0'");
+    expect(DRIVER).toContain("DEPOT_TOOLS_WIN_TOOLCHAIN: '0'");
     expect(WORKFLOW).not.toMatch(/runs-on:.*self-hosted/);
     expect(WORKFLOW).not.toMatch(/secrets\./);
     expect(WORKFLOW).toContain('persist-credentials: false');

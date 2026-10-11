@@ -930,6 +930,7 @@ export async function runValidation({
     const childEnv = {
       ...withPathPrefix(process.env, toolsDir),
       DEPOT_TOOLS_UPDATE: '0',
+      DEPOT_TOOLS_WIN_TOOLCHAIN: '0',
       GCLIENT_PY3: '1',
       NINJA_SUMMARIZE_BUILD: '1',
     };
