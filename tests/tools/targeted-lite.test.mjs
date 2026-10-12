@@ -15,7 +15,6 @@ import {
   ninjaTargetFor,
   objectTargetFor,
   plannedObjectTargets,
-  sisoQueryInputsArgs,
   summarizeUsage,
   TARGETED_LITE_CPP_UNITS,
 } from '../../tools/chromium/build-plan.mjs';
@@ -48,6 +47,7 @@ import {
   validateGnArgs,
 } from '../../tools/chromium/gn-args.mjs';
 import { loadConfig, REPO_ROOT } from '../../tools/chromium/lib/config.mjs';
+import { DEFAULT_MAX_BUFFER_BYTES } from '../../tools/chromium/lib/exec.mjs';
 
 const WORKFLOW = readFileSync(
   path.join(REPO_ROOT, '.github/workflows/chromium-build.yml'),
@@ -55,6 +55,10 @@ const WORKFLOW = readFileSync(
 );
 const DRIVER = readFileSync(
   path.join(REPO_ROOT, 'tools/chromium/ci-validation.mjs'),
+  'utf8',
+);
+const EXEC = readFileSync(
+  path.join(REPO_ROOT, 'tools/chromium/lib/exec.mjs'),
   'utf8',
 );
 const config = loadConfig();
@@ -182,16 +186,19 @@ describe('targeted-lite build command construction', () => {
       '2',
       'chrome/browser/resources/aurelia:build_ts',
     ]);
+    // Build-then-verify: the object targets go straight to the build
+    // executor, which rejects unknown targets itself.
     expect(
-      sisoQueryInputsArgs({
+      ninjaBuildArgs({
         outDirRelative: 'out/Aurelia',
-        target: 'obj/chrome/browser/ui/webui/aurelia/aurelia/aurelia_ui.obj',
+        jobs: 2,
+        targets: ['obj/chrome/browser/ui/webui/aurelia/aurelia/aurelia_ui.obj'],
       }),
     ).toEqual([
-      'query',
-      'inputs',
       '-C',
       'out/Aurelia',
+      '-j',
+      '2',
       'obj/chrome/browser/ui/webui/aurelia/aurelia/aurelia_ui.obj',
     ]);
   });
@@ -295,19 +302,20 @@ describe('targeted-lite build command construction', () => {
   });
 
   it('never suppresses unknown-target errors from the build executor', () => {
-    // The object-target pre-check still fails hard and is classified; the
-    // conversion of label form is not an error suppression path.
+    // Unknown targets fail hard through the build command itself and are
+    // classified; the label-form conversion is not an error suppression path.
     expect(
       classifyBuildFailure(
         "ninja: error: unknown target '//chrome/browser/resources/aurelia:build_ts'",
       ),
     ).toBe('target-resolution');
-    // The stage reports the class computed from the real error text (never a
-    // hardcoded pass-through) and always throws FAIL.
+    // The stage reports the class computed from the real log text (never a
+    // hardcoded pass-through) and rethrows the failure.
     expect(DRIVER).toContain(
-      '[error class: ${classifyBuildFailure(error.message)}]',
+      'const errorClass = classifyBuildFailure(output);',
     );
-    expect(DRIVER).toContain("throw new ValidationError(message, 'FAIL')");
+    expect(DRIVER).toContain('[error class: ${errorClass}]');
+    expect(DRIVER).toContain('throw error;');
   });
 
   it('refuses to plan a build without concrete targets or a job count', () => {
@@ -321,12 +329,6 @@ describe('targeted-lite build command construction', () => {
     expect(() =>
       ninjaBuildArgs({ outDirRelative: 'out/Aurelia', jobs: 2, targets: [] }),
     ).toThrow('at least one concrete target');
-    expect(() =>
-      sisoQueryInputsArgs({ outDirRelative: 'out', target: '' }),
-    ).toThrow('concrete target');
-    expect(() =>
-      sisoQueryInputsArgs({ outDirRelative: 'out', target: '//a/b:c' }),
-    ).not.toThrow();
   });
 
   it('plans the WebUI resource targets before the C++ translation units', () => {
@@ -345,50 +347,74 @@ describe('targeted-lite build command construction', () => {
     expect(
       execution.indexOf("if (mode === 'targeted' || mode === 'full')"),
     ).toBeGreaterThan(execution.indexOf('runTargetedLiteCppStage'));
-    // Object-target existence is verified through the same backend that runs
-    // the compile (Siso): `siso query inputs` for inspection, `autoninja`
-    // (→ siso ninja) for builds. Plain ninja never touches the Siso-managed
-    // out dir (depot_tools/ninja.py .siso_deps guard, run 38218572222).
-    expect(DRIVER).toMatch(/logCapture\(\s*BUILD_BACKEND\.queryCommand,/);
+    // Build-then-verify on one backend: the object targets are compiled
+    // through autoninja (→ siso) and the verify step requires the .obj files.
+    // No graph pre-query runs (its unbounded listing caused ENOBUFS in run
+    // 38248455910) and plain ninja never touches the Siso-managed out dir
+    // (depot_tools/ninja.py .siso_deps guard, run 38218572222).
+    expect(DRIVER).toContain('build-then-verify');
     expect(DRIVER).not.toMatch(/logCapture\(\s*'ninja'/);
+    expect(DRIVER).not.toMatch(/logCapture\(\s*'siso'/);
+    expect(DRIVER).not.toContain('queryLog');
+    expect(DRIVER).not.toContain('object-queries');
     expect(DRIVER).not.toContain('ninjaQueryArgs');
+    expect(DRIVER).not.toContain('sisoQueryInputsArgs');
   });
 });
 
 describe('build backend consistency (Siso-managed out dirs)', () => {
-  it('routes builds and graph queries through one backend', () => {
+  it('routes every compile through the one Siso backend', () => {
     expect(BUILD_BACKEND.buildCommand).toBe('autoninja');
-    expect(BUILD_BACKEND.queryCommand).toBe('siso');
     expect(Object.isFrozen(BUILD_BACKEND)).toBe(true);
     // Every compile stage builds via the centralized backend command.
     expect(DRIVER.match(/file: BUILD_BACKEND\.buildCommand/g)).toHaveLength(4);
-    // The GN-label to Ninja-name conversion is shared by build and query args.
+    // The GN-label to Ninja-name conversion lives at the execution boundary
+    // and applies to every target the executor sees.
     expect(
-      sisoQueryInputsArgs({
+      ninjaBuildArgs({
         outDirRelative: 'out/Aurelia',
-        target: '//chrome/browser/ui/webui/aurelia:aurelia',
+        jobs: 2,
+        targets: ['//chrome/browser/ui/webui/aurelia:aurelia'],
       }),
     ).toEqual([
-      'query',
-      'inputs',
       '-C',
       'out/Aurelia',
+      '-j',
+      '2',
       'chrome/browser/ui/webui/aurelia:aurelia',
     ]);
+    expect(ninjaTargetFor('//chrome/browser/ui/webui/aurelia:aurelia')).toBe(
+      'chrome/browser/ui/webui/aurelia:aurelia',
+    );
   });
 
-  it('rejects nonexistent object targets with the pinned-tool errors', () => {
-    // ninjautil.UnknownTargetError @ siso d38036b6: `unknown target %q`.
+  it('rejects nonexistent object targets through the build executor', () => {
+    // The build command itself fails on unknown targets with the pinned-tool
+    // errors (ninjautil.UnknownTargetError @ siso d38036b6: `unknown target
+    // %q`); classification keeps them a hard target-resolution failure.
     expect(
       classifyBuildFailure('Error: unknown target "obj/a/aurelia_ui.obj"'),
     ).toBe('target-resolution');
-    // siso subcmd/query/inputs.go targetNotFoundError: `target not found: %q`.
     expect(
       classifyBuildFailure('Error: target not found: "obj/a/aurelia_ui.obj"'),
     ).toBe('target-resolution');
+    // The targeted-cpp stage still fails hard when the executor reports them.
+    expect(DRIVER).toContain('exited with code');
+    expect(DRIVER).toContain(
+      "finish(new ValidationError(stopReason, 'RESOURCE EXHAUSTED'))",
+    );
   });
 
-  it('classifies backend mixing without suppressing it', () => {
+  it('classifies capture overflow and backend mixing without suppressing them', () => {
+    // spawnSync ENOBUFS / bounded-capture message (run 38248455910).
+    expect(
+      classifyBuildFailure(
+        'command output exceeded the 32 MB capture limit (bounded on purpose): siso query inputs',
+      ),
+    ).toBe('capture-overflow');
+    expect(
+      classifyBuildFailure('spawnSync C:\\Windows\\system32\\cmd.exe ENOBUFS'),
+    ).toBe('capture-overflow');
     // depot_tools/ninja.py .siso_deps guard as observed in run 38218572222.
     const guard =
       'depot_tools/ninja.py: out\\Aurelia contains Siso state file.\n' +
@@ -398,24 +424,21 @@ describe('build backend consistency (Siso-managed out dirs)', () => {
   });
 
   it('preserves Siso state and never switches or cleans the out dir', () => {
-    for (const args of [
-      sisoQueryInputsArgs({
-        outDirRelative: 'out/Aurelia',
-        target: 'obj/x.obj',
-      }),
-      ninjaBuildArgs({
-        outDirRelative: 'out/Aurelia',
-        jobs: 2,
-        targets: ['obj/x.obj'],
-      }),
-    ]) {
-      expect(args).not.toContain('clean');
-      expect(args.join(' ')).not.toContain('gn');
-      expect(args.join(' ')).not.toMatch(/--include_deps|-t\b/);
-    }
+    const args = ninjaBuildArgs({
+      outDirRelative: 'out/Aurelia',
+      jobs: 2,
+      targets: ['obj/x.obj'],
+    });
+    expect(args).not.toContain('clean');
+    expect(args.join(' ')).not.toContain('gn');
     // The driver never deletes Siso state files or runs gn clean.
     expect(DRIVER).not.toMatch(/(?:unlink|rm)Sync\([^)]*[Ss]iso/);
     expect(DRIVER).not.toMatch(/logCapture\(\s*'gn'[^;]*'clean'/);
+    // No spawnSync capture without a ceiling: the shared capture limit is
+    // exported, finite, and raised above Node's 1 MiB default.
+    expect(DEFAULT_MAX_BUFFER_BYTES).toBeGreaterThan(1024 * 1024);
+    expect(Number.isFinite(DEFAULT_MAX_BUFFER_BYTES)).toBe(true);
+    expect(EXEC).toContain('bounded on purpose');
   });
 });
 

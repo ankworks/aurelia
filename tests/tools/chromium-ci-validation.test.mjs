@@ -348,6 +348,76 @@ describe('pinned Chromium target and resource validation', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('tees both stdout and stderr into the stage log (real subprocess)', async () => {
+    const root = tempDirectory();
+    const logs = path.join(root, 'logs');
+    mkdirSync(logs);
+    const usagePath = path.join(root, 'resource-usage.jsonl');
+    writeFileSync(usagePath, '');
+    const logPath = path.join(logs, 'both-streams.log');
+    try {
+      await runMonitoredCommand({
+        file: process.execPath,
+        args: [
+          '-e',
+          'console.log("stdout-signal"); console.error("stderr-signal");',
+        ],
+        cwd: root,
+        env: process.env,
+        stage: 'test-both-streams',
+        dest: root,
+        logPath,
+        usagePath,
+        deadlineAt: Date.now() + 10_000,
+        pollIntervalMs: 5,
+        minimumFreeDiskGb: 0,
+        minimumAvailableMemoryGb: 0,
+        quiet: true,
+      });
+      const log = readFileSync(logPath, 'utf8');
+      expect(log).toContain('stdout-signal');
+      expect(log).toContain('stderr-signal');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('kills the process tree at the deadline (real subprocess)', async () => {
+    const root = tempDirectory();
+    const logs = path.join(root, 'logs');
+    mkdirSync(logs);
+    const usagePath = path.join(root, 'resource-usage.jsonl');
+    writeFileSync(usagePath, '');
+    const started = Date.now();
+    try {
+      await expect(
+        runMonitoredCommand({
+          file: process.execPath,
+          args: ['-e', 'setTimeout(() => {}, 60000)'],
+          cwd: root,
+          env: process.env,
+          stage: 'test-deadline-kill',
+          dest: root,
+          logPath: path.join(logs, 'deadline.log'),
+          usagePath,
+          deadlineAt: Date.now() + 400,
+          pollIntervalMs: 50,
+          minimumFreeDiskGb: 0,
+          minimumAvailableMemoryGb: 0,
+          quiet: true,
+        }),
+      ).rejects.toMatchObject({
+        status: 'RESOURCE EXHAUSTED',
+        message: expect.stringContaining('deadline'),
+      });
+      // The 60s child was terminated; the stage failed fast instead of
+      // hanging or reporting a false success.
+      expect(Date.now() - started).toBeLessThan(20_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('GN-only validation on the standard runner', () => {
