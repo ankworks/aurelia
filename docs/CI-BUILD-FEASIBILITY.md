@@ -94,10 +94,9 @@ so every time.
 
 The C++ step compiles the two controller translation units as **exact Ninja
 object targets** derived from the overlay `source_set` labels through GN's
-`obj/<label-dir>/<label-name>/<source>.obj` convention. Each object target is
-verified in the generated build graph (`siso query inputs -C out/Aurelia
-<obj-target>` on the pinned Siso binary) before compiling, and the `.obj`
-outputs are verified after. This is not a
+`obj/<label-dir>/<label-name>/<source>.obj` convention. The exact object
+targets are compiled first and the `.obj` outputs are verified after (the
+build executor itself rejects nonexistent targets). This is not a
 reduced `targeted`: the reason is the build graph itself. The controller
 targets depend on `//chrome/browser:browser_public_dependencies`, a group of
 roughly 60 public dependencies (`//content/public/browser`, `//chrome/common`,
@@ -169,32 +168,45 @@ regression tests pin the exact executor argv. Unknown-target errors are still ha
 failures, classified as `target-resolution` — the fix converts names, it never
 suppresses errors. The Chromium pin and patch set were not changed.
 
-### One build backend on Siso-managed out dirs (learned from run `38218572222`)
+### One build backend on Siso-managed out dirs (runs `38218572222` and `38248455910`)
 
-The first run that reached the C++ stage failed its object-target check
-because the driver queried the generated graph with plain `ninja -t query`.
-Pinned depot_tools `ninja.py` (`1e43ae34`) refuses that: when the out dir
-contains the Siso state marker `.siso_deps` it exits with _"contains Siso
-state file. Use `autoninja` to choose appropriate build tool, or run
-`gn clean` to switch from siso to ninja"_ for every tool outside a small
-read-only allowlist (`list`, `commands`, `inputs`, `targets` — with a TODO to
-implement those in Siso), and `query` is not in that allowlist. This is the
-documented boundary between backends, not a transient glitch: builds are
-owned by Siso (`autoninja.py` `_get_use_siso_default` dispatches
-`siso ninja --offline` whenever `.sisoenv` + `build_with_chromium = true`, and
-treats an existing `.siso_deps` as "this out dir already uses Siso").
+Two runs taught the boundary between the pinned backends and their tools.
+Run `38218572222` failed its object-target check because the driver queried
+the generated graph with plain `ninja -t query`. Pinned depot_tools `ninja.py`
+(`1e43ae34`) refuses that: when the out dir contains the Siso state marker
+`.siso_deps` it exits with _"contains Siso state file. Use `autoninja` to
+choose appropriate build tool, or run `gn clean` to switch from siso to
+ninja"_ for every tool outside a small read-only allowlist (`list`,
+`commands`, `inputs`, `targets` — with a TODO to implement those in Siso),
+and `query` is not in that allowlist. Builds are owned by Siso
+(`autoninja.py` `_get_use_siso_default` dispatches `siso ninja --offline`
+whenever `.sisoenv` + `build_with_chromium = true`, and treats an existing
+`.siso_deps` as "this out dir already uses Siso").
 
-The validation driver now keeps one consistent backend for the whole
-pipeline: every compile runs through `autoninja` (→ Siso), and object-target
-verification runs `siso query inputs -C <dir> <target>` on the same pinned
-Siso binary (CIPD `build/siso` @ `d38036b6` — the exact revision in the
-pinned `DEPS`). Siso's own query group (`subcmd/query` @ `d38036b6`) loads
-`build.ninja` read-only and rejects nonexistent targets: `ninjautil
-State.Targets` returns `unknown target %q` and the inputs traversal returns
-`target not found: %q`, both exiting non-zero. Siso state files are never
-deleted and `gn clean` is never used as a workaround — that would destroy the
-working build configuration. Classification of backend-mixing failures is
-`backend-mismatch`; nonexistent object targets stay `target-resolution`.
+Run `38248455910` replaced that query with `siso query inputs` on the pinned
+Siso binary (CIPD `build/siso` @ `d38036b6`) and reached the C++ stage — only
+to fail with `spawnSync ... ENOBUFS` before a controller compiled. Siso's
+query group (`subcmd/query` @ `d38036b6`) is read-only and rejects
+nonexistent targets (`ninjautil.State.Targets` returns `unknown target %q`,
+the inputs traversal `target not found: %q`), but `query inputs` prints the
+**complete transitive input closure** of every requested target — and with no
+arguments it falls back to the default targets of the whole build. That
+unbounded listing overflowed Node's 1 MiB `spawnSync` capture default.
+
+The design is now the simplest one that preserves every check: **build exact
+object targets, require exit code 0, verify the object files exist.** A real
+build command already rejects unknown targets (siso resolves build targets
+through the same `ninjautil.State.Targets` manifest lookup as its query
+group), a zero exit code is the compilation result, and the verify step
+requires `obj/<label-dir>/<label-name>/<source>.obj` on disk. GN-native
+metadata checks (`verifyGnTargets`, `plannedObjectTargets` allowlisting) run
+before, and `ninjaTargetFor` still converts labels at the execution boundary.
+The pre-query added no verification the build does not provide and was
+removed from the execution path. The capture layer is now explicitly bounded
+(`DEFAULT_MAX_BUFFER_BYTES`, 32 MiB) with `ENOBUFS` classified as
+`capture-overflow` — a loud failure, never a silent truncation — and stage
+logs collect both stdout and stderr. Siso state files are never deleted and
+`gn clean` is never used as a workaround.
 
 ### Measured build results
 
@@ -204,12 +216,13 @@ working build configuration. Classification of backend-mixing failures is
 | [`38141751383`](https://github.com/ankworks/aurelia/actions/runs/38141751383) | 2026-10-11 | targeted-lite, commit `93e2216` (label-conversion fix)                           | **FAIL** at `//chrome/browser/resources/newtab:lint_css` — Siso executed 105 real WebUI actions (both pages' `build_ts` TypeScript compiles completed) before Chromium Stylelint reported 29 errors in the New Tab CSS (single-quote, short-hex and duplicate-`:root` rules). Job 13:04:50Z–13:24:46Z, 19m56s.                                                                                                                                                                       | Run URL; artifacts `chromium-build-validation-38141751383`      |
 | [`38146612150`](https://github.com/ankworks/aurelia/actions/runs/38146612150) | 2026-10-11 | targeted-lite, commit `41a0703` (Stylelint fix)                                  | **FAIL** at `//chrome/browser/resources/aurelia:lint_ts` — `@typescript-eslint/no-unnecessary-type-assertion` at `aurelia_app.ts:153:20`. Stylelint clean and TypeScript compiles completed. Job 14:17:59Z–14:39:02Z, 21m03s.                                                                                                                                                                                                                                                        | Run URL; artifacts `chromium-build-validation-38146612150`      |
 | [`38218572222`](https://github.com/ankworks/aurelia/actions/runs/38218572222) | 2026-10-12 | targeted-lite, commit `47a6790` (ESLint fix)                                     | **WebUI resource compilation PASS** (`37.66s` Siso build, 119 steps: TypeScript, CSS lint, TS ESLint, minify, GRIT, resource maps, `.pak` targets; two resource-map C++ objects compiled), then **FAIL** at the C++ object-target check: plain `ninja -t query` hit depot_tools' `.siso_deps` guard (backend mixing — see the Siso backend section). Job 07:35:16Z–08:01:52Z, 26m36s. Controller C++ compilation is **NOT TESTED** (the failing check is not a compiler invocation). | Run URL; artifacts `chromium-build-validation-38218572222`      |
+| [`38248455910`](https://github.com/ankworks/aurelia/actions/runs/38248455910) | 2026-10-12 | targeted-lite, commit `8da0573` (Siso query backend)                             | **WebUI resource compilation PASS** (Siso build 119 steps / 34.79s), then **FAIL** at the C++ stage before any controller compiled: `siso query inputs` overflowed the child-process capture buffer (`spawnSync ... ENOBUFS`) while listing the object target's full transitive input closure. Job 12:20:49Z–12:47:33Z. Controller C++ compilation is **NOT TESTED**.                                                                                                                | Run URL; artifacts `chromium-build-validation-38248455910`      |
 
-The Siso-backend fix is committed on the M1.9 branch; a rerun is required
-before the targeted-lite C++ stage can be judged. WebUI resource compilation
-has passed on Windows; the Aurelia controller C++ controllers remain **NOT
-TESTED** until their compile commands exit 0, and `targeted-lite` PASS never
-implies a full browser build.
+The build-then-verify fix (with bounded capture) is committed on the M1.9
+branch; a rerun is required before the targeted-lite C++ stage can be judged.
+WebUI resource compilation has passed on Windows; the Aurelia controller C++
+controllers remain **NOT TESTED** until their compile commands exit 0, and
+`targeted-lite` PASS never implies a full browser build.
 
 ## Runner storage topology (measured in run `38103342538`)
 
