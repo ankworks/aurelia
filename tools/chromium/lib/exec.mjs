@@ -108,6 +108,15 @@ export function windowsCommandLine(file, args = []) {
 }
 
 /**
+ * Bounded capture limit for piped child output. Deliberately finite: the
+ * driver must never grow an in-memory buffer without a ceiling (run
+ * 38248455910 died on Node's tiny 1 MiB spawnSync default when one command
+ * printed far more than expected). Commands with genuinely huge output must
+ * stream to a file instead of being captured.
+ */
+export const DEFAULT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
+
+/**
  * Decide how a command should be spawned, without spawning it.
  *
  * Exported so the platform behaviour can be unit-tested on a Linux runner: the
@@ -124,9 +133,7 @@ export function resolveSpawn(
     cwd: command.cwd,
     stdio: command.stdio ?? 'inherit',
     env,
-    ...(command.maxBuffer === undefined
-      ? {}
-      : { maxBuffer: command.maxBuffer }),
+    maxBuffer: command.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES,
   };
   if (platform !== 'win32') {
     return {
@@ -159,8 +166,52 @@ export function spawnCommand(command, options = {}) {
 }
 
 /**
+ * Readable error for a failed child process. `ENOBUFS` gets its own message
+ * (and preserves `error.code`) so overflow is classified as a capture problem,
+ * never mistaken for a compiler or source failure.
+ */
+function commandError(
+  result,
+  maxBufferBytes = DEFAULT_MAX_BUFFER_BYTES,
+  { includeStdout = true } = {},
+) {
+  const stdout =
+    typeof result.stdout === 'string'
+      ? result.stdout
+      : (result.stdout?.toString('utf8') ?? '');
+  const stderr =
+    typeof result.stderr === 'string'
+      ? result.stderr
+      : (result.stderr?.toString('utf8') ?? '');
+  if (result.error !== undefined) {
+    const error = new Error(
+      result.error.code === 'ENOBUFS'
+        ? `command output exceeded the ${Math.round(
+            maxBufferBytes / (1024 * 1024),
+          )} MB capture limit (bounded on purpose): ${result.commandLine}`
+        : `command failed: ${result.commandLine}\n${
+            stderr.trim() || result.error.message
+          }`,
+    );
+    if (result.error.code !== undefined) {
+      error.code = result.error.code;
+    }
+    return error;
+  }
+  return new Error(
+    `command failed: ${result.commandLine}\n${
+      stderr.trim() ||
+      (includeStdout ? stdout.trim() : '') ||
+      `exit code ${result.status}`
+    }`,
+  );
+}
+
+/**
  * Run a command and return its standard output, throwing a readable error on a
  * non-zero exit - the shape the upstream file fetcher needs.
+ *
+ * @returns {string}
  */
 export function captureCommand(command, options = {}) {
   const result = spawnCommand(
@@ -171,19 +222,8 @@ export function captureCommand(command, options = {}) {
     typeof result.stdout === 'string'
       ? result.stdout
       : (result.stdout?.toString('utf8') ?? '');
-  const stderr =
-    typeof result.stderr === 'string'
-      ? result.stderr
-      : (result.stderr?.toString('utf8') ?? '');
-  if (result.error !== undefined) {
-    throw new Error(
-      `command failed: ${result.commandLine}\n${stderr.trim() || result.error.message}`,
-    );
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `command failed: ${result.commandLine}\n${stderr.trim() || stdout.trim() || `exit code ${result.status}`}`,
-    );
+  if (result.error !== undefined || result.status !== 0) {
+    throw commandError(result, command.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES);
   }
   return stdout;
 }
@@ -201,19 +241,10 @@ export function captureCommandBuffer(command, options = {}) {
     { ...command, stdio: ['ignore', 'pipe', 'pipe'] },
     options,
   );
-  const stderr =
-    typeof result.stderr === 'string'
-      ? result.stderr
-      : (result.stderr?.toString('utf8') ?? '');
-  if (result.error !== undefined) {
-    throw new Error(
-      `command failed: ${result.commandLine}\n${stderr.trim() || result.error.message}`,
-    );
-  }
-  if (result.status !== 0) {
-    throw new Error(
-      `command failed: ${result.commandLine}\n${stderr.trim() || `exit code ${result.status}`}`,
-    );
+  if (result.error !== undefined || result.status !== 0) {
+    throw commandError(result, command.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES, {
+      includeStdout: false,
+    });
   }
   return Buffer.isBuffer(result.stdout)
     ? result.stdout

@@ -42,11 +42,16 @@ import {
   formatDuration,
   ninjaBuildArgs,
   plannedObjectTargets,
-  sisoQueryInputsArgs,
   summarizeUsage,
   TARGETED_LITE_CPP_UNITS,
 } from './build-plan.mjs';
-import { captureCommand, resolveSpawn, withPathPrefix } from './lib/exec.mjs';
+import {
+  DEFAULT_MAX_BUFFER_BYTES,
+  captureCommand,
+  resolveSpawn,
+  spawnCommand,
+  withPathPrefix,
+} from './lib/exec.mjs';
 import { describeGitEnvironment } from './lib/windows-git.mjs';
 import { scopedGnCheckCommands, verifyGnTargets } from './gn-targets.mjs';
 import {
@@ -766,14 +771,49 @@ function logCapture(file, args, cwd, env, logPath) {
   const header = [`$ ${file} ${args.join(' ')}`, `cwd: ${cwd}`, ''].join('\n');
   const write = existsSync(logPath) ? appendFileSync : writeFileSync;
   write(logPath, `${header}\n`);
-  try {
-    const result = captureCommand({ file, args, cwd }, { env });
-    appendFileSync(logPath, result.endsWith('\n') ? result : `${result}\n`);
-    return result.trim();
-  } catch (error) {
-    appendFileSync(logPath, `${error.message}\n`);
+  // Capture both streams through the bounded helper: stdout and stderr both
+  // land in the log (compiler diagnostics arrive on stderr), the buffer has a
+  // hard ceiling (ENOBUFS is a classified failure, never a silent truncation),
+  // and nothing is spawned without going through resolveSpawn's Windows rules.
+  const result = spawnCommand(
+    { file, args, cwd, stdio: ['ignore', 'pipe', 'pipe'] },
+    { env },
+  );
+  const stdout =
+    typeof result.stdout === 'string'
+      ? result.stdout
+      : (result.stdout?.toString('utf8') ?? '');
+  const stderr =
+    typeof result.stderr === 'string'
+      ? result.stderr
+      : (result.stderr?.toString('utf8') ?? '');
+  appendFileSync(
+    logPath,
+    [stdout, stderr]
+      .filter((chunk) => chunk.length > 0)
+      .map((chunk) => (chunk.endsWith('\n') ? chunk : `${chunk}\n`))
+      .join(''),
+  );
+  if (result.error !== undefined || result.status !== 0) {
+    const detail =
+      result.error?.code === 'ENOBUFS'
+        ? `command output exceeded the ${Math.round(
+            DEFAULT_MAX_BUFFER_BYTES / (1024 * 1024),
+          )} MB capture limit (bounded on purpose): ${result.commandLine}`
+        : `command failed: ${result.commandLine}\n${
+            stderr.trim() ||
+            stdout.trim() ||
+            result.error?.message ||
+            `exit code ${result.status}`
+          }`;
+    const error = new Error(detail);
+    if (result.error?.code !== undefined) {
+      error.code = result.error.code;
+    }
+    appendFileSync(logPath, `${detail}\n`);
     throw error;
   }
+  return stdout.trim();
 }
 
 function setStage(context, id, status, details, extra = {}) {
@@ -941,31 +981,16 @@ async function runTargetedLiteCppStage(context, { srcDir, outDir, env, deadlineA
     context,
     'targeted-cpp',
     'RUNNING',
-    'Verifying the exact Ninja object targets for the Aurelia controller translation units.',
+    'Compiling the exact Ninja object targets for the Aurelia controller translation units (build-then-verify).',
   );
-  const queryLog = path.join(context.logsDir, 'targeted-cpp-object-queries.log');
-  try {
-    for (const unit of units) {
-      // Object targets are verified through the same build backend that runs
-      // the compile: `siso query inputs` on the pinned siso binary reads the
-      // generated build.ninja and fails with `unknown target` /
-      // `target not found` for nonexistent targets (siso subcmd/query +
-      // ninjautil.State.Targets @ d38036b6). Plain `ninja` must never touch
-      // this Siso-managed out dir: depot_tools/ninja.py exits with its
-      // .siso_deps guard (run 38218572222).
-      logCapture(
-        BUILD_BACKEND.queryCommand,
-        sisoQueryInputsArgs({ outDirRelative, target: unit.object }),
-        srcDir,
-        env,
-        queryLog,
-      );
-    }
-  } catch (error) {
-    const message = `${error.message} [error class: ${classifyBuildFailure(error.message)}]`;
-    setStage(context, 'targeted-cpp', 'FAIL', message);
-    throw new ValidationError(message, 'FAIL');
-  }
+  // No separate graph query runs before the compile: the build executor itself
+  // resolves the targets through the same manifest lookup as its query tools
+  // (nonexistent targets fail the build with `unknown target`), a zero exit
+  // code is the compilation result, and the verify step below requires the
+  // object files to exist. An earlier `siso query inputs` pre-check was
+  // removed after its unbounded output listing overflowed the child-process
+  // capture limit (run 38248455910) without adding any verification the build
+  // command does not already provide.
   await runCommandStage(context, {
     id: 'targeted-cpp',
     label:

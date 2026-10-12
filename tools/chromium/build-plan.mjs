@@ -139,45 +139,35 @@ export function ninjaBuildArgs({ outDirRelative, jobs, targets }) {
 }
 
 /**
- * Build-backend commands for a Siso-managed Chromium 155 output directory
+ * Build-backend command for a Siso-managed Chromium 155 output directory
  * (pinned tools: GN cfcd774b, Siso `build/siso` @ d38036b6 via CIPD
  * `third_party/siso/cipd`, Ninja 1.12.1.chromium.4, depot_tools @ 1e43ae34).
  *
  * A generated out dir is Siso-managed (`out/.siso_deps` exists) because
  * autoninja dispatches every build to `siso ninja --offline`
  * (autoninja.py `_get_use_siso_default`). Keep one consistent backend:
+ * every compile runs through `autoninja` (→ siso).
  *
- * - builds run through `autoninja` (→ siso), and
- * - build-graph inspection runs through `siso query ...` on the same pinned
- *   siso binary (subcmd/query @ d38036b6): read-only manifest queries that
- *   fail with `unknown target` / `target not found` for nonexistent targets.
+ * Object-target existence is NOT checked with a separate graph query. A real
+ * build command already rejects unknown targets (siso resolves build targets
+ * through the same `ninjautil.State.Targets` manifest lookup as its query
+ * group, failing with `unknown target %q`) and a compile that exits 0 leaves
+ * the object on disk, which `runCommandStage`'s verify step then requires.
+ * Earlier milestones queried the graph first with `ninja -t query`, which
+ * depot_tools/ninja.py blocks on Siso-managed dirs (its `.siso_deps` guard,
+ * run 38218572222), and then with `siso query inputs`, whose contract is to
+ * print the full transitive input closure of every requested target (run
+ * 38248455910: that listing blew past the child-process capture limit with
+ * `ENOBUFS` before a single controller compiled). Build-then-verify provides
+ * the same rejection of nonexistent object targets with fewer commands.
  *
- * Never run plain `ninja` against a Siso-managed out dir: depot_tools/ninja.py
- * exits with its `.siso_deps` guard for every tool outside the read-only
- * allowlist (list/commands/inputs/targets) and `query` is not in that
- * allowlist (observed in run 38218572222). Never delete Siso state files and
- * never `gn clean` to "switch back" — that would destroy the working build.
+ * Never run plain `ninja` against a Siso-managed out dir (the same
+ * `.siso_deps` guard) and never delete Siso state files or `gn clean` to
+ * "switch back" — that would destroy the working build configuration.
  */
 export const BUILD_BACKEND = Object.freeze({
   buildCommand: 'autoninja',
-  queryCommand: 'siso',
 });
-
-/**
- * Exact `siso query inputs` arguments: verify one target exists in the
- * generated build graph (siso subcmd/query/inputs.go at the pinned revision:
- * `siso query inputs -C <dir> <targets>` resolves each target through
- * `ninjautil.State.Targets`, which returns `unknown target %q` for paths that
- * are not in the manifest, and `target not found: %q` for unresolvable
- * traversal steps). Read-only: loads `build.ninja`; the `.siso_deps` deps log
- * is only read with `--include_deps`, which we never pass.
- */
-export function sisoQueryInputsArgs({ outDirRelative, target }) {
-  if (typeof target !== 'string' || target.length === 0) {
-    throw new Error('siso query inputs needs a concrete target');
-  }
-  return ['query', 'inputs', '-C', outDirRelative, ninjaTargetFor(target)];
-}
 
 /**
  * Classify a failed build output so the summary can distinguish resource
@@ -220,6 +210,11 @@ export function classifyBuildFailure(text) {
     )
   ) {
     return 'target-resolution';
+  }
+  if (/ENOBUFS|exceeded the [\d.]+ [KM]B capture limit/i.test(output)) {
+    // Child-process output overflowed the bounded capture buffer. The command
+    // result is unknown - never treat it as a pass or a source error.
+    return 'capture-overflow';
   }
   if (/contains Siso state file/i.test(output)) {
     // depot_tools/ninja.py's .siso_deps guard: a Ninja-direct command was
