@@ -138,12 +138,45 @@ export function ninjaBuildArgs({ outDirRelative, jobs, targets }) {
   ];
 }
 
-/** `ninja -t query` arguments: verify one target exists in the generated graph. */
-export function ninjaQueryArgs({ outDirRelative, target }) {
+/**
+ * Build-backend commands for a Siso-managed Chromium 155 output directory
+ * (pinned tools: GN cfcd774b, Siso `build/siso` @ d38036b6 via CIPD
+ * `third_party/siso/cipd`, Ninja 1.12.1.chromium.4, depot_tools @ 1e43ae34).
+ *
+ * A generated out dir is Siso-managed (`out/.siso_deps` exists) because
+ * autoninja dispatches every build to `siso ninja --offline`
+ * (autoninja.py `_get_use_siso_default`). Keep one consistent backend:
+ *
+ * - builds run through `autoninja` (→ siso), and
+ * - build-graph inspection runs through `siso query ...` on the same pinned
+ *   siso binary (subcmd/query @ d38036b6): read-only manifest queries that
+ *   fail with `unknown target` / `target not found` for nonexistent targets.
+ *
+ * Never run plain `ninja` against a Siso-managed out dir: depot_tools/ninja.py
+ * exits with its `.siso_deps` guard for every tool outside the read-only
+ * allowlist (list/commands/inputs/targets) and `query` is not in that
+ * allowlist (observed in run 38218572222). Never delete Siso state files and
+ * never `gn clean` to "switch back" — that would destroy the working build.
+ */
+export const BUILD_BACKEND = Object.freeze({
+  buildCommand: 'autoninja',
+  queryCommand: 'siso',
+});
+
+/**
+ * Exact `siso query inputs` arguments: verify one target exists in the
+ * generated build graph (siso subcmd/query/inputs.go at the pinned revision:
+ * `siso query inputs -C <dir> <targets>` resolves each target through
+ * `ninjautil.State.Targets`, which returns `unknown target %q` for paths that
+ * are not in the manifest, and `target not found: %q` for unresolvable
+ * traversal steps). Read-only: loads `build.ninja`; the `.siso_deps` deps log
+ * is only read with `--include_deps`, which we never pass.
+ */
+export function sisoQueryInputsArgs({ outDirRelative, target }) {
   if (typeof target !== 'string' || target.length === 0) {
-    throw new Error('ninja query needs a concrete target');
+    throw new Error('siso query inputs needs a concrete target');
   }
-  return ['-C', outDirRelative, '-t', 'query', ninjaTargetFor(target)];
+  return ['query', 'inputs', '-C', outDirRelative, ninjaTargetFor(target)];
 }
 
 /**
@@ -181,8 +214,17 @@ export function classifyBuildFailure(text) {
   if (/C1083: Cannot open include file/i.test(output)) {
     return 'missing-include';
   }
-  if (/unknown target|missing and no known rule to make it/i.test(output)) {
+  if (
+    /unknown target|target not found|missing and no known rule to make it/i.test(
+      output,
+    )
+  ) {
     return 'target-resolution';
+  }
+  if (/contains Siso state file/i.test(output)) {
+    // depot_tools/ninja.py's .siso_deps guard: a Ninja-direct command was
+    // aimed at a Siso-managed out dir (backend mixing). Not a source error.
+    return 'backend-mismatch';
   }
   if (/\bLNK\d{3,5}\b/.test(output)) {
     return 'link-error';

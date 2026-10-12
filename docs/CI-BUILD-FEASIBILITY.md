@@ -95,8 +95,9 @@ so every time.
 The C++ step compiles the two controller translation units as **exact Ninja
 object targets** derived from the overlay `source_set` labels through GN's
 `obj/<label-dir>/<label-name>/<source>.obj` convention. Each object target is
-verified in the generated Ninja graph (`autoninja -C out/Aurelia -t query`)
-before compiling, and the `.obj` outputs are verified after. This is not a
+verified in the generated build graph (`siso query inputs -C out/Aurelia
+<obj-target>` on the pinned Siso binary) before compiling, and the `.obj`
+outputs are verified after. This is not a
 reduced `targeted`: the reason is the build graph itself. The controller
 targets depend on `//chrome/browser:browser_public_dependencies`, a group of
 roughly 60 public dependencies (`//content/public/browser`, `//chrome/common`,
@@ -163,20 +164,52 @@ labels"_. So `gn desc` / `gn check` take the canonical `//` form while the
 build executor requires the same label without `//`. The conversion now lives
 in one place at the build execution boundary
 (`tools/chromium/build-plan.mjs` `ninjaTargetFor`, applied by `ninjaBuildArgs`
-and `ninjaQueryArgs`); GN validation keeps the canonical form, and regression
-tests pin the exact executor argv. Unknown-target errors are still hard
+and `sisoQueryInputsArgs`); GN validation keeps the canonical form, and
+regression tests pin the exact executor argv. Unknown-target errors are still hard
 failures, classified as `target-resolution` — the fix converts names, it never
 suppresses errors. The Chromium pin and patch set were not changed.
 
+### One build backend on Siso-managed out dirs (learned from run `38218572222`)
+
+The first run that reached the C++ stage failed its object-target check
+because the driver queried the generated graph with plain `ninja -t query`.
+Pinned depot_tools `ninja.py` (`1e43ae34`) refuses that: when the out dir
+contains the Siso state marker `.siso_deps` it exits with _"contains Siso
+state file. Use `autoninja` to choose appropriate build tool, or run
+`gn clean` to switch from siso to ninja"_ for every tool outside a small
+read-only allowlist (`list`, `commands`, `inputs`, `targets` — with a TODO to
+implement those in Siso), and `query` is not in that allowlist. This is the
+documented boundary between backends, not a transient glitch: builds are
+owned by Siso (`autoninja.py` `_get_use_siso_default` dispatches
+`siso ninja --offline` whenever `.sisoenv` + `build_with_chromium = true`, and
+treats an existing `.siso_deps` as "this out dir already uses Siso").
+
+The validation driver now keeps one consistent backend for the whole
+pipeline: every compile runs through `autoninja` (→ Siso), and object-target
+verification runs `siso query inputs -C <dir> <target>` on the same pinned
+Siso binary (CIPD `build/siso` @ `d38036b6` — the exact revision in the
+pinned `DEPS`). Siso's own query group (`subcmd/query` @ `d38036b6`) loads
+`build.ninja` read-only and rejects nonexistent targets: `ninjautil
+State.Targets` returns `unknown target %q` and the inputs traversal returns
+`target not found: %q`, both exiting non-zero. Siso state files are never
+deleted and `gn clean` is never used as a workaround — that would destroy the
+working build configuration. Classification of backend-mixing failures is
+`backend-mismatch`; nonexistent object targets stay `target-resolution`.
+
 ### Measured build results
 
-| Run                                                                           | Date (UTC) | Scope                                                                            | Result                                                                                                                                                                                                                                                                                                                                                                                                                            | Evidence                                                        |
-| ----------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| [`38139216273`](https://github.com/ankworks/aurelia/actions/runs/38139216273) | 2026-10-11 | targeted-lite full pipeline on `windows-2025` (4 vCPU / 16 GB), commit `cd1ecab` | **FAIL** at WebUI resource compilation — every `autoninja` resource target was rejected as an unknown target because the driver passed GN-style `//` labels to the Ninja-name boundary. Preflight, pinned sync, patch/overlay, GN argument policy, `gn gen`, effective-arguments, target-label and scoped `gn check` stages completed before the failure (job 12:25:43Z–12:48:52Z, 23m09s total). No compilation PASS is claimed. | Run URL; stage logs and `build-summary.md` in the run artifacts |
+| Run                                                                           | Date (UTC) | Scope                                                                            | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Evidence                                                        |
+| ----------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| [`38139216273`](https://github.com/ankworks/aurelia/actions/runs/38139216273) | 2026-10-11 | targeted-lite full pipeline on `windows-2025` (4 vCPU / 16 GB), commit `cd1ecab` | **FAIL** at WebUI resource compilation — every `autoninja` resource target was rejected as an unknown target because the driver passed GN-style `//` labels to the Ninja-name boundary. Preflight, pinned sync, patch/overlay, GN argument policy, `gn gen`, effective-arguments, target-label and scoped `gn check` stages completed before the failure (job 12:25:43Z–12:48:52Z, 23m09s total). No compilation PASS is claimed.                                                    | Run URL; stage logs and `build-summary.md` in the run artifacts |
+| [`38141751383`](https://github.com/ankworks/aurelia/actions/runs/38141751383) | 2026-10-11 | targeted-lite, commit `93e2216` (label-conversion fix)                           | **FAIL** at `//chrome/browser/resources/newtab:lint_css` — Siso executed 105 real WebUI actions (both pages' `build_ts` TypeScript compiles completed) before Chromium Stylelint reported 29 errors in the New Tab CSS (single-quote, short-hex and duplicate-`:root` rules). Job 13:04:50Z–13:24:46Z, 19m56s.                                                                                                                                                                       | Run URL; artifacts `chromium-build-validation-38141751383`      |
+| [`38146612150`](https://github.com/ankworks/aurelia/actions/runs/38146612150) | 2026-10-11 | targeted-lite, commit `41a0703` (Stylelint fix)                                  | **FAIL** at `//chrome/browser/resources/aurelia:lint_ts` — `@typescript-eslint/no-unnecessary-type-assertion` at `aurelia_app.ts:153:20`. Stylelint clean and TypeScript compiles completed. Job 14:17:59Z–14:39:02Z, 21m03s.                                                                                                                                                                                                                                                        | Run URL; artifacts `chromium-build-validation-38146612150`      |
+| [`38218572222`](https://github.com/ankworks/aurelia/actions/runs/38218572222) | 2026-10-12 | targeted-lite, commit `47a6790` (ESLint fix)                                     | **WebUI resource compilation PASS** (`37.66s` Siso build, 119 steps: TypeScript, CSS lint, TS ESLint, minify, GRIT, resource maps, `.pak` targets; two resource-map C++ objects compiled), then **FAIL** at the C++ object-target check: plain `ninja -t query` hit depot_tools' `.siso_deps` guard (backend mixing — see the Siso backend section). Job 07:35:16Z–08:01:52Z, 26m36s. Controller C++ compilation is **NOT TESTED** (the failing check is not a compiler invocation). | Run URL; artifacts `chromium-build-validation-38218572222`      |
 
-The label-conversion fix is committed on the M1.9 branch; a rerun is required
-before any compilation status can move past FAIL. Until a build command exits
-with code 0 on Windows, `targeted-lite` compilation remains **NOT TESTED**.
+The Siso-backend fix is committed on the M1.9 branch; a rerun is required
+before the targeted-lite C++ stage can be judged. WebUI resource compilation
+has passed on Windows; the Aurelia controller C++ controllers remain **NOT
+TESTED** until their compile commands exit 0, and `targeted-lite` PASS never
+implies a full browser build.
 
 ## Runner storage topology (measured in run `38103342538`)
 

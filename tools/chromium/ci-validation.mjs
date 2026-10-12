@@ -37,11 +37,12 @@ import {
 import { isGithubHostedRunner } from '../ci/runner-environment.mjs';
 import { isMainModule } from '../lib/entry.mjs';
 import {
+  BUILD_BACKEND,
   classifyBuildFailure,
   formatDuration,
   ninjaBuildArgs,
-  ninjaQueryArgs,
   plannedObjectTargets,
+  sisoQueryInputsArgs,
   summarizeUsage,
   TARGETED_LITE_CPP_UNITS,
 } from './build-plan.mjs';
@@ -860,7 +861,7 @@ async function runCommandStage(context, {
     // status covers runtime limits; a compiler that exited non-zero is
     // classified from its own diagnostics, without suppressing them.
     let details = error.message;
-    if (status === 'FAIL' && file === 'autoninja') {
+    if (status === 'FAIL' && file === BUILD_BACKEND.buildCommand) {
       let output = '';
       try {
         output = readFileSync(logPath, 'utf8').slice(-200_000);
@@ -945,19 +946,23 @@ async function runTargetedLiteCppStage(context, { srcDir, outDir, env, deadlineA
   const queryLog = path.join(context.logsDir, 'targeted-cpp-object-queries.log');
   try {
     for (const unit of units) {
-      // Plain `ninja` tool mode reads the same generated build.ninja and always
-      // implements `-t query`; autoninja may dispatch to Siso, whose tool-mode
-      // surface is not guaranteed. The compile itself uses autoninja.
+      // Object targets are verified through the same build backend that runs
+      // the compile: `siso query inputs` on the pinned siso binary reads the
+      // generated build.ninja and fails with `unknown target` /
+      // `target not found` for nonexistent targets (siso subcmd/query +
+      // ninjautil.State.Targets @ d38036b6). Plain `ninja` must never touch
+      // this Siso-managed out dir: depot_tools/ninja.py exits with its
+      // .siso_deps guard (run 38218572222).
       logCapture(
-        'ninja',
-        ninjaQueryArgs({ outDirRelative, target: unit.object }),
+        BUILD_BACKEND.queryCommand,
+        sisoQueryInputsArgs({ outDirRelative, target: unit.object }),
         srcDir,
         env,
         queryLog,
       );
     }
   } catch (error) {
-    const message = `${error.message} [error class: target-resolution]`;
+    const message = `${error.message} [error class: ${classifyBuildFailure(error.message)}]`;
     setStage(context, 'targeted-cpp', 'FAIL', message);
     throw new ValidationError(message, 'FAIL');
   }
@@ -965,7 +970,7 @@ async function runTargetedLiteCppStage(context, { srcDir, outDir, env, deadlineA
     id: 'targeted-cpp',
     label:
       'Compile the Aurelia WebUI controller translation units with the Windows MSVC toolchain (targeted-lite object-level scope)',
-    file: 'autoninja',
+    file: BUILD_BACKEND.buildCommand,
     args: ninjaBuildArgs({
       outDirRelative,
       jobs: compileJobsForMode('targeted-lite'),
@@ -1619,7 +1624,7 @@ export async function runValidation({
     await runCommandStage(context, {
       id: 'webui-resources',
       label: 'Build WebUI TypeScript, GRIT resource descriptions, headers, maps, and pak files',
-      file: 'autoninja',
+      file: BUILD_BACKEND.buildCommand,
       args: ninjaBuildArgs({
         outDirRelative: path.relative(srcDir, outDir),
         jobs: compileJobsForMode(mode),
@@ -1648,7 +1653,7 @@ export async function runValidation({
       await runCommandStage(context, {
         id: 'targeted-cpp',
         label: 'Compile Aurelia WebUI controllers and their C++ dependencies',
-        file: 'autoninja',
+        file: BUILD_BACKEND.buildCommand,
         args: ninjaBuildArgs({
           outDirRelative: path.relative(srcDir, outDir),
           jobs: compileJobsForMode(mode),
@@ -1664,7 +1669,7 @@ export async function runValidation({
       await runCommandStage(context, {
         id: 'full-chrome',
         label: 'Compile the full Chromium browser target after targeted validation passes',
-        file: 'autoninja',
+        file: BUILD_BACKEND.buildCommand,
         args: ninjaBuildArgs({
           outDirRelative: path.relative(srcDir, outDir),
           jobs: compileJobsForMode(mode),
