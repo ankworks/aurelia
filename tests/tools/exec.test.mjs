@@ -8,10 +8,14 @@
  * on Linux, because the machine that actually uses them cannot run this suite.
  */
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import {
   captureCommand,
   captureCommandBuffer,
+  DEFAULT_MAX_BUFFER_BYTES,
   quoteWindowsArgument,
   resolveSpawn,
   spawnCommand,
@@ -159,6 +163,84 @@ describe('running and capturing', () => {
       // POSIX attempts to spawn the missing executable directly.
       expect(result.error).toBeDefined();
       expect(result.status).toBeNull();
+    }
+  });
+});
+
+describe('bounded capture of large output (real subprocesses)', () => {
+  it("exposes a finite capture ceiling above Node's 1 MiB spawnSync default", () => {
+    expect(DEFAULT_MAX_BUFFER_BYTES).toBeGreaterThan(1024 * 1024);
+    expect(Number.isFinite(DEFAULT_MAX_BUFFER_BYTES)).toBe(true);
+  });
+
+  it('fails a loud ENOBUFS instead of truncating when output overflows', () => {
+    // Regression for run 38248455910: `siso query inputs` printed far more
+    // than Node's default capture buffer, the sync spawn died with ENOBUFS,
+    // and the run failed before a controller compiled. Overflow must surface
+    // as a classified error - never a silent truncation that could fake a pass.
+    let caught = null;
+    try {
+      captureCommand({
+        file: process.execPath,
+        args: ['-e', 'process.stdout.write("x".repeat(8 * 1024 * 1024))'],
+        cwd: process.cwd(),
+        maxBuffer: 256 * 1024,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught.code).toBe('ENOBUFS');
+    expect(caught.message).toMatch(/MB capture limit \(bounded on purpose\)/);
+  });
+
+  it('applies the same ceiling to raw-byte capture', () => {
+    let caught = null;
+    try {
+      captureCommandBuffer({
+        file: process.execPath,
+        args: ['-e', 'process.stdout.write("y".repeat(4 * 1024 * 1024))'],
+        cwd: process.cwd(),
+        maxBuffer: 128 * 1024,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught.code).toBe('ENOBUFS');
+  });
+
+  it('captures megabytes of legitimate output within the default ceiling', () => {
+    const megabytes = 4;
+    const output = captureCommand({
+      file: process.execPath,
+      args: [
+        '-e',
+        `process.stdout.write("z".repeat(${megabytes} * 1024 * 1024))`,
+      ],
+      cwd: process.cwd(),
+    });
+    expect(output.length).toBe(megabytes * 1024 * 1024);
+  });
+
+  it('keeps arguments with spaces intact through a real spawn', () => {
+    const scriptDir = mkdtempSync(path.join(tmpdir(), 'aurelia exec test '));
+    try {
+      const output = captureCommand({
+        file: process.execPath,
+        args: [
+          '-e',
+          'console.log(process.argv.slice(1).join("|"))',
+          'an argument with spaces',
+          path.join(scriptDir, 'file with spaces.txt'),
+        ],
+        cwd: scriptDir,
+      });
+      expect(output.trim()).toBe(
+        `an argument with spaces|${path.join(scriptDir, 'file with spaces.txt')}`,
+      );
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
     }
   });
 });

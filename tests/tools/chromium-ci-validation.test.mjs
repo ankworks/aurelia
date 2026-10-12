@@ -57,7 +57,12 @@ function tempDirectory() {
 
 describe('hosted Chromium validation configuration', () => {
   it('accepts only the requested validation levels and runner sizes', () => {
-    expect(VALIDATION_LEVELS).toEqual(['gn', 'targeted', 'full']);
+    expect(VALIDATION_LEVELS).toEqual([
+      'gn',
+      'targeted-lite',
+      'targeted',
+      'full',
+    ]);
     expect(RUNNER_SIZES).toEqual(['standard', 'larger']);
     expect(
       parseValidationOptions(
@@ -126,7 +131,9 @@ describe('hosted Chromium validation configuration', () => {
   it('has only manual dispatch, selectable levels, and a GN default', () => {
     expect(WORKFLOW).toContain('workflow_dispatch:');
     expect(WORKFLOW).toMatch(/validation_level:\s*\n[\s\S]*?type:\s*choice/);
-    expect(WORKFLOW).toMatch(/options:\s*\n\s+- gn\n\s+- targeted\n\s+- full/);
+    expect(WORKFLOW).toMatch(
+      /options:\s*\n\s+- gn\n\s+- targeted-lite\n\s+- targeted\n\s+- full/,
+    );
     expect(WORKFLOW).toMatch(/default:\s*gn/);
     expect(WORKFLOW).not.toMatch(/^\s+(push|pull_request|schedule):/m);
     expect(WORKFLOW).toContain('timeout-minutes: 360');
@@ -341,6 +348,76 @@ describe('pinned Chromium target and resource validation', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('tees both stdout and stderr into the stage log (real subprocess)', async () => {
+    const root = tempDirectory();
+    const logs = path.join(root, 'logs');
+    mkdirSync(logs);
+    const usagePath = path.join(root, 'resource-usage.jsonl');
+    writeFileSync(usagePath, '');
+    const logPath = path.join(logs, 'both-streams.log');
+    try {
+      await runMonitoredCommand({
+        file: process.execPath,
+        args: [
+          '-e',
+          'console.log("stdout-signal"); console.error("stderr-signal");',
+        ],
+        cwd: root,
+        env: process.env,
+        stage: 'test-both-streams',
+        dest: root,
+        logPath,
+        usagePath,
+        deadlineAt: Date.now() + 10_000,
+        pollIntervalMs: 5,
+        minimumFreeDiskGb: 0,
+        minimumAvailableMemoryGb: 0,
+        quiet: true,
+      });
+      const log = readFileSync(logPath, 'utf8');
+      expect(log).toContain('stdout-signal');
+      expect(log).toContain('stderr-signal');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('kills the process tree at the deadline (real subprocess)', async () => {
+    const root = tempDirectory();
+    const logs = path.join(root, 'logs');
+    mkdirSync(logs);
+    const usagePath = path.join(root, 'resource-usage.jsonl');
+    writeFileSync(usagePath, '');
+    const started = Date.now();
+    try {
+      await expect(
+        runMonitoredCommand({
+          file: process.execPath,
+          args: ['-e', 'setTimeout(() => {}, 60000)'],
+          cwd: root,
+          env: process.env,
+          stage: 'test-deadline-kill',
+          dest: root,
+          logPath: path.join(logs, 'deadline.log'),
+          usagePath,
+          deadlineAt: Date.now() + 400,
+          pollIntervalMs: 50,
+          minimumFreeDiskGb: 0,
+          minimumAvailableMemoryGb: 0,
+          quiet: true,
+        }),
+      ).rejects.toMatchObject({
+        status: 'RESOURCE EXHAUSTED',
+        message: expect.stringContaining('deadline'),
+      });
+      // The 60s child was terminated; the stage failed fast instead of
+      // hanging or reporting a false success.
+      expect(Date.now() - started).toBeLessThan(20_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('GN-only validation on the standard runner', () => {
@@ -454,12 +531,15 @@ describe('GN-only validation on the standard runner', () => {
   });
 
   it('skips every compilation stage in gn mode at the source level', () => {
-    const gnSkip = DRIVER.indexOf("if (mode !== 'gn') {");
-    const webui = DRIVER.indexOf("id: 'webui-resources'");
+    const start = DRIVER.indexOf('const gnArgsFile');
+    const end = DRIVER.indexOf("writeSummary(context, 'PASS')", start);
+    const execution = DRIVER.slice(start, end);
+    const gnSkip = execution.indexOf("if (mode !== 'gn') {");
+    const webui = execution.indexOf("id: 'webui-resources'");
     expect(gnSkip).toBeGreaterThan(-1);
     expect(webui).toBeGreaterThan(gnSkip);
-    expect(DRIVER.indexOf("id: 'targeted-cpp'")).toBeGreaterThan(gnSkip);
-    expect(DRIVER.indexOf("id: 'full-chrome'")).toBeGreaterThan(gnSkip);
+    expect(execution.indexOf("id: 'targeted-cpp'")).toBeGreaterThan(gnSkip);
+    expect(execution.indexOf("id: 'full-chrome'")).toBeGreaterThan(gnSkip);
     expect(COMPILE_STAGE_IDS).toEqual(
       expect.arrayContaining([
         'webui-resources',

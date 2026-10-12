@@ -75,11 +75,14 @@ export const MINIMUM_FREE_DISK_GB = 150;
  *
  * - `gn` uses config.buildRequirements.gnValidation.freeDiskGb (GN-only
  *   shallow checkout, no compilation, smaller footprint).
+ * - `targeted-lite` uses config.buildRequirements.targetedLite.freeDiskGb
+ *   (experimental resource-aware compilation with a bounded compile scope and
+ *   the same shallow checkout; see docs/CI-BUILD-FEASIBILITY.md).
  * - `targeted` and `full` use the unchanged reference 150 GB floor.
  *
  * @param {object} [options]
  * @param {object} [options.config] Loaded Chromium configuration.
- * @param {string} [options.mode] Validation mode ('gn' | 'targeted' | 'full').
+ * @param {string} [options.mode] Validation mode ('gn' | 'targeted-lite' | 'targeted' | 'full').
  * @returns {number}
  */
 export function diskFloorGb({ config, mode = 'full' } = {}) {
@@ -87,6 +90,16 @@ export function diskFloorGb({ config, mode = 'full' } = {}) {
     const gnFloor = config?.buildRequirements?.gnValidation?.freeDiskGb;
     if (typeof gnFloor === 'number' && Number.isFinite(gnFloor) && gnFloor > 0) {
       return gnFloor;
+    }
+  }
+  if (mode === 'targeted-lite') {
+    const liteFloor = config?.buildRequirements?.targetedLite?.freeDiskGb;
+    if (
+      typeof liteFloor === 'number' &&
+      Number.isFinite(liteFloor) &&
+      liteFloor > 0
+    ) {
+      return liteFloor;
     }
   }
   return MINIMUM_FREE_DISK_GB;
@@ -548,13 +561,17 @@ function main(argv) {
   }
   const jobs = parseJobs(valueOf('--jobs'));
   const mode = valueOf('--mode') ?? 'full';
-  if (!['gn', 'targeted', 'full'].includes(mode)) {
-    throw new Error(`invalid --mode "${mode}"; choose gn, targeted, or full`);
+  if (!['gn', 'targeted-lite', 'targeted', 'full'].includes(mode)) {
+    throw new Error(
+      `invalid --mode "${mode}"; choose gn, targeted-lite, targeted, or full`,
+    );
   }
-  // GN-only validation uses --no-history by default to reduce checkout size
-  // (shallow depth=1 for every repo). Compilation modes retain full history
-  // so incremental gclient sync works correctly.
-  const defaultNoHistory = mode === 'gn';
+  // GN-only validation and the experimental targeted-lite level use
+  // --no-history by default to reduce checkout size (shallow depth=1 for every
+  // repo): both run one-shot on a standard runner and never re-sync
+  // incrementally. The strict targeted/full compilation modes retain full
+  // history so incremental gclient sync works correctly.
+  const defaultNoHistory = mode === 'gn' || mode === 'targeted-lite';
   const noHistory = argv.includes('--no-history')
     ? true
     : argv.includes('--with-history')

@@ -181,7 +181,7 @@
   border-left-color: var(--aurelia-color-accent);
 }
 
-.aurelia-cp-result[aria-selected="true"] {
+.aurelia-cp-result[aria-selected='true'] {
   background: var(--aurelia-command-palette-highlight);
   border-left-color: var(--aurelia-color-accent);
 }
@@ -297,7 +297,7 @@
   .aurelia-cp-result:hover,
   .aurelia-cp-result:focus,
   .aurelia-cp-result.selected,
-  .aurelia-cp-result[aria-selected="true"] {
+  .aurelia-cp-result[aria-selected='true'] {
     background: Highlight;
     color: HighlightText;
     border-left-color: Highlight;

@@ -102,6 +102,10 @@ export function renderCss(tokens) {
 :root {
 ${renderBlock(shared, customProperty)}
 ${renderBlock(light, customProperty)}
+
+  /* Transparency is a progressive enhancement: when it is unavailable the
+   * opaque elevated surface is used instead. */
+  --aurelia-surface: var(--aurelia-color-background-elevated);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -111,22 +115,16 @@ ${renderBlock(dark, customProperty, '    ')}
 }
 
 /* Force a theme regardless of the OS setting (appearance.theme preference). */
-:root[data-aurelia-theme="light"] {
+:root[data-aurelia-theme='light'] {
 ${renderBlock(light, customProperty)}
 }
 
-:root[data-aurelia-theme="dark"] {
+:root[data-aurelia-theme='dark'] {
 ${renderBlock(dark, customProperty)}
 }
 
-/* Transparency is a progressive enhancement: when it is unavailable the
- * opaque elevated surface is used instead. */
-:root {
-  --aurelia-surface: var(--aurelia-color-background-elevated);
-}
-
 @media (prefers-reduced-transparency: no-preference) {
-  :root[data-aurelia-transparency="on"] {
+  :root[data-aurelia-transparency='on'] {
     --aurelia-surface: var(--aurelia-color-surface-glass);
   }
 }

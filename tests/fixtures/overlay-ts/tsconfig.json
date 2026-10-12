@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "//resources/js/load_time_data.js": ["./load_time_data"]
+    }
+  },
+  "files": [
+    "load_time_data.d.ts",
+    "redundant-cast-fixture.ts",
+    "../../../chromium/overlay/chrome/browser/resources/aurelia/aurelia_app.ts",
+    "../../../chromium/overlay/chrome/browser/resources/aurelia/aurelia_status_card.ts",
+    "../../../chromium/overlay/chrome/browser/resources/aurelia/command_palette.ts",
+    "../../../chromium/overlay/chrome/browser/resources/newtab/newtab_app.ts"
+  ]
+}

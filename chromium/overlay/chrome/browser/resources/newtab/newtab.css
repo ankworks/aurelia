@@ -58,7 +58,7 @@ body {
 
 /* Glass effect on wallpaper where supported */
 @supports (backdrop-filter: blur(1px)) {
-  :root[data-aurelia-transparency="on"] .newtab-wallpaper {
+  :root[data-aurelia-transparency='on'] .newtab-wallpaper {
     backdrop-filter: blur(var(--aurelia-effect-blur-strong));
     -webkit-backdrop-filter: blur(var(--aurelia-effect-blur-strong));
     opacity: 0.8;
@@ -105,7 +105,7 @@ body {
   }
   
   .newtab-logo::before {
-    content: "A";
+    content: 'A';
   }
 }
 

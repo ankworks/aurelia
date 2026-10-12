@@ -26,8 +26,8 @@
   --aurelia-space-xl: 24px;
   --aurelia-space-xxl: 32px;
   --aurelia-space-xxxl: 48px;
-  --aurelia-type-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "SF Pro Text", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --aurelia-type-family-monospace: "Cascadia Mono", "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono", monospace;
+  --aurelia-type-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, -apple-system, 'SF Pro Text', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --aurelia-type-family-monospace: 'Cascadia Mono', 'SFMono-Regular', ui-monospace, Consolas, 'Liberation Mono', monospace;
   --aurelia-type-size-xs: 11px;
   --aurelia-type-size-sm: 12px;
   --aurelia-type-size-base: 13px;
@@ -54,38 +54,42 @@
   --aurelia-z-index-dropdown: 500;
   --aurelia-z-index-modal: 1000;
   --aurelia-z-index-toast: 1100;
-  --aurelia-color-accent-text: #ffffff;
+  --aurelia-color-accent-text: #fff;
   --aurelia-color-accent-subtle: rgba(79, 91, 213, 0.10);
   --aurelia-color-background: #f6f7fb;
-  --aurelia-color-background-elevated: #ffffff;
-  --aurelia-color-surface: #ffffff;
+  --aurelia-color-background-elevated: #fff;
+  --aurelia-color-surface: #fff;
   --aurelia-color-surface-glass: rgba(255, 255, 255, 0.72);
   --aurelia-color-surface-glass-border: rgba(255, 255, 255, 0.30);
-  --aurelia-color-omnibox-background: #ffffff;
+  --aurelia-color-omnibox-background: #fff;
   --aurelia-color-omnibox-background-hover: #f0f2f7;
   --aurelia-color-omnibox-border: rgba(20, 22, 28, 0.10);
   --aurelia-color-omnibox-text: #14161c;
   --aurelia-color-omnibox-text-muted: #8a90a2;
   --aurelia-color-tab-background-inactive: rgba(20, 22, 28, 0.03);
-  --aurelia-color-tab-background-active: #ffffff;
+  --aurelia-color-tab-background-active: #fff;
   --aurelia-color-tab-background-hover: rgba(20, 22, 28, 0.05);
   --aurelia-color-tab-text-inactive: #5a6072;
   --aurelia-color-tab-text-active: #14161c;
   --aurelia-color-toolbar-background: rgba(255, 255, 255, 0.80);
-  --aurelia-color-toolbar-background-opaque: #ffffff;
-  --aurelia-color-command-palette-background: #ffffff;
+  --aurelia-color-toolbar-background-opaque: #fff;
+  --aurelia-color-command-palette-background: #fff;
   --aurelia-color-command-palette-border: rgba(20, 22, 28, 0.12);
   --aurelia-color-command-palette-text: #14161c;
   --aurelia-color-command-palette-text-muted: #8a90a2;
   --aurelia-color-command-palette-highlight: rgba(110, 123, 242, 0.12);
   --aurelia-color-new-tab-background: #f6f7fb;
-  --aurelia-color-new-tab-card-background: #ffffff;
+  --aurelia-color-new-tab-card-background: #fff;
   --aurelia-color-text: #14161c;
   --aurelia-color-text-muted: #5a6072;
   --aurelia-color-border: rgba(20, 22, 28, 0.12);
   --aurelia-color-success: #1c7a4d;
   --aurelia-color-warning: #8a5a00;
   --aurelia-color-danger: #b3261e;
+
+  /* Transparency is a progressive enhancement: when it is unavailable the
+   * opaque elevated surface is used instead. */
+  --aurelia-surface: var(--aurelia-color-background-elevated);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -126,33 +130,33 @@
 }
 
 /* Force a theme regardless of the OS setting (appearance.theme preference). */
-:root[data-aurelia-theme="light"] {
-  --aurelia-color-accent-text: #ffffff;
+:root[data-aurelia-theme='light'] {
+  --aurelia-color-accent-text: #fff;
   --aurelia-color-accent-subtle: rgba(79, 91, 213, 0.10);
   --aurelia-color-background: #f6f7fb;
-  --aurelia-color-background-elevated: #ffffff;
-  --aurelia-color-surface: #ffffff;
+  --aurelia-color-background-elevated: #fff;
+  --aurelia-color-surface: #fff;
   --aurelia-color-surface-glass: rgba(255, 255, 255, 0.72);
   --aurelia-color-surface-glass-border: rgba(255, 255, 255, 0.30);
-  --aurelia-color-omnibox-background: #ffffff;
+  --aurelia-color-omnibox-background: #fff;
   --aurelia-color-omnibox-background-hover: #f0f2f7;
   --aurelia-color-omnibox-border: rgba(20, 22, 28, 0.10);
   --aurelia-color-omnibox-text: #14161c;
   --aurelia-color-omnibox-text-muted: #8a90a2;
   --aurelia-color-tab-background-inactive: rgba(20, 22, 28, 0.03);
-  --aurelia-color-tab-background-active: #ffffff;
+  --aurelia-color-tab-background-active: #fff;
   --aurelia-color-tab-background-hover: rgba(20, 22, 28, 0.05);
   --aurelia-color-tab-text-inactive: #5a6072;
   --aurelia-color-tab-text-active: #14161c;
   --aurelia-color-toolbar-background: rgba(255, 255, 255, 0.80);
-  --aurelia-color-toolbar-background-opaque: #ffffff;
-  --aurelia-color-command-palette-background: #ffffff;
+  --aurelia-color-toolbar-background-opaque: #fff;
+  --aurelia-color-command-palette-background: #fff;
   --aurelia-color-command-palette-border: rgba(20, 22, 28, 0.12);
   --aurelia-color-command-palette-text: #14161c;
   --aurelia-color-command-palette-text-muted: #8a90a2;
   --aurelia-color-command-palette-highlight: rgba(110, 123, 242, 0.12);
   --aurelia-color-new-tab-background: #f6f7fb;
-  --aurelia-color-new-tab-card-background: #ffffff;
+  --aurelia-color-new-tab-card-background: #fff;
   --aurelia-color-text: #14161c;
   --aurelia-color-text-muted: #5a6072;
   --aurelia-color-border: rgba(20, 22, 28, 0.12);
@@ -161,7 +165,7 @@
   --aurelia-color-danger: #b3261e;
 }
 
-:root[data-aurelia-theme="dark"] {
+:root[data-aurelia-theme='dark'] {
   --aurelia-color-accent-text: #0b0d12;
   --aurelia-color-accent-subtle: rgba(139, 149, 255, 0.16);
   --aurelia-color-background: #0e1015;
@@ -196,14 +200,8 @@
   --aurelia-color-danger: #ff8a80;
 }
 
-/* Transparency is a progressive enhancement: when it is unavailable the
- * opaque elevated surface is used instead. */
-:root {
-  --aurelia-surface: var(--aurelia-color-background-elevated);
-}
-
 @media (prefers-reduced-transparency: no-preference) {
-  :root[data-aurelia-transparency="on"] {
+  :root[data-aurelia-transparency='on'] {
     --aurelia-surface: var(--aurelia-color-surface-glass);
   }
 }
